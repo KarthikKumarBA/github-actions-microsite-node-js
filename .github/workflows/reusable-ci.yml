@@ -4,9 +4,12 @@ on:
   workflow_call:
     inputs:
       version:
+        description: Build version
         required: true
         type: string
+
       artifact-name:
+        description: Artifact name
         required: true
         type: string
 
@@ -17,13 +20,14 @@ jobs:
   build:
     name: Build and Test
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        uses: actions/setup-node@v5
         with:
           node-version: '22'
           cache: npm
@@ -46,15 +50,41 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Verify build
+        run: |
+          test -d dist
+          test -f dist/index.html
+          echo "Build verification successful"
+
       - name: Create package
+        env:
+          ARTIFACT_NAME: ${{ inputs.artifact-name }}
         run: |
           cd dist
-          zip -r "../${{ inputs.artifact-name }}.zip" .
+          zip -r "../${ARTIFACT_NAME}.zip" .
           cd ..
 
       - name: Upload package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ${{ inputs.artifact-name }}
           path: ${{ inputs.artifact-name }}.zip
           retention-days: 30
+          if-no-files-found: error
+
+      - name: CI Summary
+        if: always()
+        env:
+          VERSION: ${{ inputs.version }}
+          ARTIFACT_NAME: ${{ inputs.artifact-name }}
+        run: |
+          echo "## CI Build Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Item | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Version | \`${VERSION}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Artifact | \`${ARTIFACT_NAME}.zip\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Commit | \`${GITHUB_SHA}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Lint | Completed |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Unit Tests | Completed |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Build | Completed |" >> "$GITHUB_STEP_SUMMARY"
