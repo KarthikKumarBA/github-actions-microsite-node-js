@@ -1,8 +1,26 @@
 module.exports = {
   testEnvironment: "jsdom",
-  collectCoverageFrom: ["src/**/*.js"],
+
+  testMatch: [
+    "**/tests/**/*.test.js"
+  ],
+
+  testPathIgnorePatterns: [
+    "/node_modules/",
+    "/e2e/"
+  ],
+
+  collectCoverageFrom: [
+    "src/**/*.js"
+  ],
+
   coverageDirectory: "coverage",
-  coverageReporters: ["text", "lcov"],
+
+  coverageReporters: [
+    "text",
+    "lcov"
+  ],
+
   coverageThreshold: {
     global: {
       branches: 50,
