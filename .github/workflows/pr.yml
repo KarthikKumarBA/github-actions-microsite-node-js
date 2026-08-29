@@ -27,6 +27,49 @@ jobs:
 
   security:
     name: Security
+    needs: ci
     uses: ./.github/workflows/reusable-security.yml
     secrets:
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  codeql:
+    name: CodeQL
+    needs: ci
+    uses: ./.github/workflows/reusable-codeql.yml
+    permissions:
+      contents: read
+      security-events: write
+
+  summary:
+    name: PR Quality Gate
+    needs:
+      - ci
+      - security
+      - codeql
+
+    if: always()
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: PR Summary
+        env:
+          CI_RESULT: ${{ needs.ci.result }}
+          SECURITY_RESULT: ${{ needs.security.result }}
+          CODEQL_RESULT: ${{ needs.codeql.result }}
+          VERSION: 1.0.${{ github.run_number }}-SNAPSHOT-pr-${{ github.event.pull_request.number }}
+        run: |
+          echo "## PR Validation Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Item | Result |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Version | \`${VERSION}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| CI | ${CI_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Sonar + Trivy | ${SECURITY_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| CodeQL | ${CODEQL_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "${CI_RESULT}" != "success" ] || \
+             [ "${SECURITY_RESULT}" != "success" ] || \
+             [ "${CODEQL_RESULT}" != "success" ]; then
+            exit 1
+          fi

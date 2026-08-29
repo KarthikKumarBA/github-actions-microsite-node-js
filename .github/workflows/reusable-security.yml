@@ -13,15 +13,16 @@ jobs:
   sonar:
     name: SonarQube
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
       - name: Setup Node.js
-        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        uses: actions/setup-node@v5
         with:
           node-version: '22'
           cache: npm
@@ -33,26 +34,44 @@ jobs:
         run: npm run test:coverage
 
       - name: SonarQube Cloud Scan
-        uses: SonarSource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f
+        id: sonar-scan
+        uses: SonarSource/sonarqube-scan-action@v6
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: https://sonarcloud.io
 
       - name: SonarQube Quality Gate
-        uses: SonarSource/sonarqube-quality-gate-action@7a5fffe8e523c40e0c740b6bc2712ab503e52efa
+        id: sonar-gate
+        uses: SonarSource/sonarqube-quality-gate-action@v1.2.0
         timeout-minutes: 5
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
+      - name: Sonar Summary
+        if: always()
+        env:
+          SCAN_RESULT: ${{ steps.sonar-scan.outcome }}
+          GATE_RESULT: ${{ steps.sonar-gate.outcome }}
+        run: |
+          echo "## SonarQube Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Check | Result |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Sonar Scan | ${SCAN_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Quality Gate | ${GATE_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
+
   trivy:
     name: Trivy
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Checkout
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        uses: actions/checkout@v5
 
       - name: Trivy filesystem scan
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        id: trivy
+        uses: aquasecurity/trivy-action@0.33.1
         with:
           scan-type: fs
           scan-ref: .
@@ -60,3 +79,14 @@ jobs:
           ignore-unfixed: true
           exit-code: '1'
           format: table
+
+      - name: Trivy Summary
+        if: always()
+        env:
+          RESULT: ${{ steps.trivy.outcome }}
+        run: |
+          echo "## Trivy Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Check | Result |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| HIGH / CRITICAL vulnerabilities | ${RESULT} |" >> "$GITHUB_STEP_SUMMARY"

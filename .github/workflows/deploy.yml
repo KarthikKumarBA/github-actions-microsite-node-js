@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Release version to deploy
+        description: Release version to deploy (example 1.0.25)
         required: true
         type: string
 
@@ -18,12 +18,12 @@ on:
           - prod
 
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 
 concurrency:
-  group: deploy-${{ inputs.environment }}
+  group: pages-deployment
   cancel-in-progress: false
 
 jobs:
@@ -35,6 +35,19 @@ jobs:
       name: ${{ inputs.environment }}
 
     steps:
+      - name: Checkout source
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+
+      - name: Install Playwright
+        run: |
+          npm ci --ignore-scripts
+          npx playwright install --with-deps chromium
+
       - name: Download release artifact
         env:
           GH_TOKEN: ${{ github.token }}
@@ -45,34 +58,108 @@ jobs:
             --repo "${REPOSITORY}" \
             --pattern "microsite-${VERSION}.zip"
 
-      - name: Extract artifact
+      - name: Extract release
         env:
           VERSION: ${{ inputs.version }}
         run: |
-          mkdir -p dist
-          unzip "microsite-${VERSION}.zip" -d dist
+          mkdir -p release
+          unzip "microsite-${VERSION}.zip" -d release
+          test -f release/index.html
 
-      - name: Verify artifact
+      - name: Restore Pages state
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          test -f dist/index.html
-          echo "Artifact validation successful"
+          mkdir -p site
+
+          if git ls-remote --exit-code origin refs/heads/pages-state; then
+            git fetch origin pages-state
+            git --work-tree=site checkout origin/pages-state -- . || true
+          fi
+
+      - name: Prepare environment content
+        env:
+          DEPLOY_ENV: ${{ inputs.environment }}
+        run: |
+          if [ "${DEPLOY_ENV}" = "prod" ]; then
+            find site -maxdepth 1 -type f -delete
+            cp -R release/. site/
+          else
+            rm -rf "site/${DEPLOY_ENV}"
+            mkdir -p "site/${DEPLOY_ENV}"
+            cp -R release/. "site/${DEPLOY_ENV}/"
+          fi
+
+      - name: Save Pages state
+        env:
+          DEPLOY_ENV: ${{ inputs.environment }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          rm -rf pages-state-work
+          mkdir pages-state-work
+
+          cp -R site/. pages-state-work/
+
+          cd pages-state-work
+
+          git init
+          git checkout -b pages-state
+
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+          git add .
+          git commit -m "deploy ${VERSION} to ${DEPLOY_ENV}"
+
+          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push --force origin pages-state
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          DEPLOY_ENV: ${{ inputs.environment }}
+          VERSION: ${{ inputs.version }}
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v4
         with:
-          path: dist
+          path: site
 
       - name: Deploy GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
+
+      - name: Determine deployment URL
+        id: url
+        env:
+          DEPLOY_ENV: ${{ inputs.environment }}
+          PAGE_URL: ${{ steps.deployment.outputs.page_url }}
+        run: |
+          BASE_URL="${PAGE_URL%/}"
+
+          if [ "${DEPLOY_ENV}" = "prod" ]; then
+            DEPLOY_URL="${BASE_URL}/"
+          else
+            DEPLOY_URL="${BASE_URL}/${DEPLOY_ENV}/"
+          fi
+
+          echo "url=${DEPLOY_URL}" >> "$GITHUB_OUTPUT"
+          echo "Deployment URL: ${DEPLOY_URL}"
+
+      - name: Run Playwright deployment validation
+        env:
+          DEPLOY_URL: ${{ steps.url.outputs.url }}
+        run: |
+          npx playwright test
 
       - name: Deployment Summary
+        if: always()
         env:
           VERSION: ${{ inputs.version }}
           DEPLOY_ENV: ${{ inputs.environment }}
+          DEPLOY_URL: ${{ steps.url.outputs.url }}
+          DEPLOY_STATUS: ${{ job.status }}
         run: |
           echo "## Deployment Summary" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
@@ -81,4 +168,9 @@ jobs:
           echo "| Version | \`${VERSION}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Environment | \`${DEPLOY_ENV}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Artifact | \`microsite-${VERSION}.zip\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Status | Deployed |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Playwright Validation | Completed |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Deployment Status | ${DEPLOY_STATUS} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Live URL" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "${DEPLOY_URL}" >> "$GITHUB_STEP_SUMMARY"

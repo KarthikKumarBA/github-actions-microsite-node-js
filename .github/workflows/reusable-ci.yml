@@ -4,12 +4,10 @@ on:
   workflow_call:
     inputs:
       version:
-        description: Build version
         required: true
         type: string
 
       artifact-name:
-        description: Artifact name
         required: true
         type: string
 
@@ -47,7 +45,7 @@ jobs:
       - name: Unit tests and coverage
         run: npm run test:coverage
 
-      - name: Build
+      - name: Build application
         run: npm run build
 
       - name: Verify build
@@ -64,8 +62,8 @@ jobs:
           zip -r "../${ARTIFACT_NAME}.zip" .
           cd ..
 
-      - name: Upload package
-        uses: actions/upload-artifact@v5
+      - name: Upload CI artifact
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ inputs.artifact-name }}
           path: ${{ inputs.artifact-name }}.zip
@@ -77,6 +75,7 @@ jobs:
         env:
           VERSION: ${{ inputs.version }}
           ARTIFACT_NAME: ${{ inputs.artifact-name }}
+          JOB_STATUS: ${{ job.status }}
         run: |
           echo "## CI Build Summary" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
@@ -85,6 +84,8 @@ jobs:
           echo "| Version | \`${VERSION}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Artifact | \`${ARTIFACT_NAME}.zip\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Commit | \`${GITHUB_SHA}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Node.js | 22 |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Lint | Completed |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Unit Tests | Completed |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Unit Test | Completed |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Build | Completed |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| CI Status | ${JOB_STATUS} |" >> "$GITHUB_STEP_SUMMARY"
