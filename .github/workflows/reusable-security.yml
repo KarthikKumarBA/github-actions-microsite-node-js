@@ -17,33 +17,48 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: '22'
           cache: npm
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Generate coverage
         run: npm run test:coverage
 
       - name: SonarQube Cloud Scan
+        id: sonar-scan
         uses: SonarSource/sonarqube-scan-action@v6
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: https://sonarcloud.io
 
       - name: SonarQube Quality Gate
+        id: sonar-gate
         uses: SonarSource/sonarqube-quality-gate-action@v1
         timeout-minutes: 5
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+      - name: SonarQube Summary
+        if: always()
+        env:
+          SCAN_RESULT: ${{ steps.sonar-scan.outcome }}
+          GATE_RESULT: ${{ steps.sonar-gate.outcome }}
+        run: |
+          echo "## SonarQube Security Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Check | Result |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Sonar Scan | ${SCAN_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Quality Gate | ${GATE_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
 
   trivy:
     name: Trivy
@@ -52,9 +67,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Trivy filesystem scan
+        id: trivy
         uses: aquasecurity/trivy-action@0.33.1
         with:
           scan-type: fs
@@ -63,3 +79,14 @@ jobs:
           ignore-unfixed: true
           exit-code: '1'
           format: table
+
+      - name: Trivy Summary
+        if: always()
+        env:
+          TRIVY_RESULT: ${{ steps.trivy.outcome }}
+        run: |
+          echo "## Trivy Security Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Check | Result |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| HIGH / CRITICAL Scan | ${TRIVY_RESULT} |" >> "$GITHUB_STEP_SUMMARY"

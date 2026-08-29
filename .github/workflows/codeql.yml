@@ -15,17 +15,36 @@ permissions:
 
 jobs:
   codeql:
-    name: CodeQL
+    name: CodeQL Security Scan
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
+        uses: github/codeql-action/init@v4
         with:
           languages: javascript-typescript
 
-      - name: Analyze
-        uses: github/codeql-action/analyze@v3
+      - name: Perform CodeQL Analysis
+        id: codeql
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:javascript-typescript"
+
+      - name: CodeQL Summary
+        if: always()
+        env:
+          CODEQL_OUTCOME: ${{ steps.codeql.outcome }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          echo "## CodeQL Security Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Check | Result |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| CodeQL Analysis | ${CODEQL_OUTCOME} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Language | JavaScript / TypeScript |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Detailed findings: Security → Code scanning alerts" >> "$GITHUB_STEP_SUMMARY"
