@@ -1,4 +1,4 @@
-name: PR Validation
+name: PR CI
 
 on:
   pull_request:
@@ -18,13 +18,15 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-
   ci:
-    name: CI Validation
+    name: CI
     uses: ./.github/workflows/reusable-ci.yml
+    with:
+      version: 1.0.${{ github.run_number }}-SNAPSHOT-pr-${{ github.event.pull_request.number }}
+      artifact-name: microsite-1.0.${{ github.run_number }}-SNAPSHOT-pr-${{ github.event.pull_request.number }}
 
   security:
-    name: Security Validation
+    name: Security
     uses: ./.github/workflows/reusable-security.yml
     secrets:
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}

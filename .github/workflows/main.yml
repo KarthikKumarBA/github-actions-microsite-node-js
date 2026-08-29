@@ -1,4 +1,4 @@
-name: Production CI/CD
+name: Release CI
 
 on:
   push:
@@ -11,13 +11,16 @@ permissions:
   contents: read
 
 concurrency:
-  group: production
+  group: release-ci
   cancel-in-progress: false
 
 jobs:
   ci:
     name: CI
     uses: ./.github/workflows/reusable-ci.yml
+    with:
+      version: 1.0.${{ github.run_number }}
+      artifact-name: microsite-1.0.${{ github.run_number }}
 
   security:
     name: Security
@@ -25,18 +28,40 @@ jobs:
     secrets:
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
-  deploy:
-    name: Production Deployment
-
+  release:
+    name: Publish Release
     needs:
       - ci
       - security
 
-    if: ${{ needs.ci.result == 'success' && needs.security.result == 'success' }}
-
-    uses: ./.github/workflows/reusable-pages-deploy.yml
+    runs-on: ubuntu-latest
 
     permissions:
-      contents: read
-      pages: write
-      id-token: write
+      contents: write
+
+    steps:
+      - name: Download release artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: microsite-1.0.${{ github.run_number }}
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v1.0.${{ github.run_number }}" \
+            "microsite-1.0.${{ github.run_number }}.zip" \
+            --repo "${{ github.repository }}" \
+            --target "${{ github.sha }}" \
+            --title "v1.0.${{ github.run_number }}" \
+            --notes "Automated release from commit ${{ github.sha }}"
+
+      - name: Release Summary
+        run: |
+          echo "## Release Created" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Version:** \`1.0.${{ github.run_number }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Artifact:** \`microsite-1.0.${{ github.run_number }}.zip\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Use version **1.0.${{ github.run_number }}** in the Deployment workflow." >> "$GITHUB_STEP_SUMMARY"
