@@ -1,0 +1,24 @@
+{
+  "name": "github-actions-microsite",
+  "version": "1.0.0",
+  "description": "Enterprise GitHub Actions CI/CD technical test microsite",
+  "main": "src/app.js",
+  "scripts": {
+    "lint": "eslint src/**/*.js",
+    "lint:html": "htmlhint src/**/*.html",
+    "format:check": "prettier --check \"src/**/*.{html,css,js}\"",
+    "format": "prettier --write \"src/**/*.{html,css,js}\"",
+    "test": "jest",
+    "test:coverage": "jest --coverage",
+    "build": "rm -rf dist && mkdir dist && copyfiles -u 1 \"src/**/*\" dist",
+    "ci": "npm run lint && npm run lint:html && npm run format:check && npm run test:coverage && npm run build"
+  },
+  "devDependencies": {
+    "copyfiles": "^2.4.1",
+    "eslint": "^9.0.0",
+    "htmlhint": "^1.1.4",
+    "jest": "^30.0.0",
+    "jest-environment-jsdom": "^30.0.0",
+    "prettier": "^3.0.0"
+  }
+}

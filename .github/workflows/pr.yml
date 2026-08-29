@@ -1,0 +1,30 @@
+name: PR Validation
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+
+  ci:
+    name: CI Validation
+    uses: ./.github/workflows/reusable-ci.yml
+
+  security:
+    name: Security Validation
+    uses: ./.github/workflows/reusable-security.yml
+    secrets:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}

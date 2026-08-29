@@ -1,0 +1,27 @@
+body {
+  margin: 0;
+  font-family: Arial, sans-serif;
+  background: #f4f6f8;
+}
+
+.container {
+  max-width: 800px;
+  margin: 100px auto;
+  text-align: center;
+}
+
+h1 {
+  color: #24292f;
+}
+
+#pipeline-status {
+  margin: 30px;
+  padding: 20px;
+  background: white;
+  border-radius: 8px;
+}
+
+button {
+  padding: 12px 24px;
+  cursor: pointer;
+}

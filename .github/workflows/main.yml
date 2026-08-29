@@ -1,0 +1,42 @@
+name: Production CI/CD
+
+on:
+  push:
+    branches:
+      - main
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    name: CI
+    uses: ./.github/workflows/reusable-ci.yml
+
+  security:
+    name: Security
+    uses: ./.github/workflows/reusable-security.yml
+    secrets:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  deploy:
+    name: Production Deployment
+
+    needs:
+      - ci
+      - security
+
+    if: ${{ needs.ci.result == 'success' && needs.security.result == 'success' }}
+
+    uses: ./.github/workflows/reusable-pages-deploy.yml
+
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
