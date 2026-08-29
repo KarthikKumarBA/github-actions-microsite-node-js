@@ -63,13 +63,13 @@ jobs:
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "| Check | Result |" >> "$GITHUB_STEP_SUMMARY"
           echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Unit Test Coverage | Generated |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Sonar Scan | ${SCAN_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Quality Gate | ${GATE_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Job Status | ${JOB_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
 
   trivy:
     name: Trivy Security Scan
+    needs: sonar
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -108,7 +108,6 @@ jobs:
     needs:
       - sonar
       - trivy
-    if: always()
     runs-on: ubuntu-latest
 
     steps:
@@ -126,8 +125,6 @@ jobs:
 
           if [ "${SONAR_RESULT}" != "success" ] || \
              [ "${TRIVY_RESULT}" != "success" ]; then
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "Security Quality Gate: FAILED" >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
 
