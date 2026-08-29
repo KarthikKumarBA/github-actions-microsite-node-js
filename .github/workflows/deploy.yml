@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Release version to deploy (example 1.0.45)
+        description: Release version to deploy
         required: true
         type: string
 
@@ -38,15 +38,19 @@ jobs:
       - name: Download release artifact
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          REPOSITORY: ${{ github.repository }}
         run: |
-          gh release download "v${{ inputs.version }}" \
-            --repo "${{ github.repository }}" \
-            --pattern "microsite-${{ inputs.version }}.zip"
+          gh release download "v${VERSION}" \
+            --repo "${REPOSITORY}" \
+            --pattern "microsite-${VERSION}.zip"
 
       - name: Extract artifact
+        env:
+          VERSION: ${{ inputs.version }}
         run: |
           mkdir -p dist
-          unzip "microsite-${{ inputs.version }}.zip" -d dist
+          unzip "microsite-${VERSION}.zip" -d dist
 
       - name: Verify artifact
         run: |
@@ -66,12 +70,15 @@ jobs:
         uses: actions/deploy-pages@v4
 
       - name: Deployment Summary
+        env:
+          VERSION: ${{ inputs.version }}
+          DEPLOY_ENV: ${{ inputs.environment }}
         run: |
           echo "## Deployment Summary" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "| Item | Value |" >> "$GITHUB_STEP_SUMMARY"
           echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Version | \`${{ inputs.version }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Environment | \`${{ inputs.environment }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Artifact | \`microsite-${{ inputs.version }}.zip\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Version | \`${VERSION}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Environment | \`${DEPLOY_ENV}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Artifact | \`microsite-${VERSION}.zip\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Status | Deployed |" >> "$GITHUB_STEP_SUMMARY"
