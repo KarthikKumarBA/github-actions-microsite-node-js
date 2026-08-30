@@ -1,0 +1,255 @@
+name: Reusable Deploy
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+
+      environment:
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  deploy:
+    name: Deploy ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+
+    environment:
+      name: github-pages
+      url: ${{ steps.urls.outputs.deploy_url }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Download release artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          gh release download "v${VERSION}" \
+            --repo "${REPOSITORY}" \
+            --pattern "microsite-${VERSION}.zip"
+
+      - name: Verify downloaded artifact
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          test -f "microsite-${VERSION}.zip"
+          echo "Release artifact verified"
+
+      - name: Extract release
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          rm -rf release
+          mkdir -p release
+
+          unzip "microsite-${VERSION}.zip" -d release
+
+          test -f release/index.html
+
+      - name: Restore existing Pages content
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          rm -rf site
+          mkdir -p site
+
+          if git ls-remote \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            refs/heads/pages-state | grep -q pages-state; then
+
+            rm -rf pages-existing
+
+            git clone \
+              --single-branch \
+              --branch pages-state \
+              "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+              pages-existing
+
+            cp -R pages-existing/. site/
+            rm -rf site/.git
+
+          else
+            echo "pages-state branch does not exist yet"
+          fi
+
+      - name: Prepare environment content
+        env:
+          DEPLOY_ENV: ${{ inputs.environment }}
+        run: |
+          if [ "${DEPLOY_ENV}" = "prod" ]; then
+
+            find site \
+              -maxdepth 1 \
+              -type f \
+              -delete
+
+            cp -R release/. site/
+
+          else
+
+            rm -rf "site/${DEPLOY_ENV}"
+            mkdir -p "site/${DEPLOY_ENV}"
+
+            cp -R release/. "site/${DEPLOY_ENV}/"
+
+          fi
+
+      - name: Verify Pages content
+        env:
+          DEPLOY_ENV: ${{ inputs.environment }}
+        run: |
+          if [ "${DEPLOY_ENV}" = "prod" ]; then
+            test -f site/index.html
+          else
+            test -f "site/${DEPLOY_ENV}/index.html"
+          fi
+
+          echo "Pages content verified"
+
+      - name: Save Pages state
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          DEPLOY_ENV: ${{ inputs.environment }}
+        run: |
+          rm -rf pages-state-work
+          mkdir -p pages-state-work
+
+          cp -R site/. pages-state-work/
+
+          cd pages-state-work
+
+          git init
+          git checkout -b pages-state
+
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+          git add .
+          git commit -m "deploy ${VERSION} to ${DEPLOY_ENV}"
+
+          git remote add origin \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+          git push \
+            --force \
+            origin pages-state
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload GitHub Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: site
+
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
+
+      - name: Calculate deployment URL
+        id: urls
+        env:
+          PAGE_URL: ${{ steps.deployment.outputs.page_url }}
+          DEPLOY_ENV: ${{ inputs.environment }}
+        run: |
+          BASE_URL="${PAGE_URL%/}"
+
+          if [ "${DEPLOY_ENV}" = "prod" ]; then
+            DEPLOY_URL="${BASE_URL}/"
+          else
+            DEPLOY_URL="${BASE_URL}/${DEPLOY_ENV}/"
+          fi
+
+          echo "deploy_url=${DEPLOY_URL}" >> "$GITHUB_OUTPUT"
+          echo "Deployment URL: ${DEPLOY_URL}"
+
+      - name: Wait for GitHub Pages
+        env:
+          DEPLOY_URL: ${{ steps.urls.outputs.deploy_url }}
+        run: |
+          echo "Waiting for ${DEPLOY_URL}"
+
+          for i in {1..12}; do
+
+            STATUS=$(curl \
+              -L \
+              -s \
+              -o /dev/null \
+              -w "%{http_code}" \
+              "${DEPLOY_URL}")
+
+            echo "Attempt ${i}: HTTP ${STATUS}"
+
+            if [ "${STATUS}" = "200" ]; then
+              echo "GitHub Pages is ready"
+              exit 0
+            fi
+
+            sleep 10
+          done
+
+          echo "GitHub Pages did not become ready"
+          exit 1
+
+      - name: Run Playwright post-deployment test
+        id: playwright
+        env:
+          DEPLOY_URL: ${{ steps.urls.outputs.deploy_url }}
+        run: npx playwright test
+
+      - name: Deployment Summary
+        if: always()
+        env:
+          VERSION: ${{ inputs.version }}
+          DEPLOY_ENV: ${{ inputs.environment }}
+          DEPLOY_URL: ${{ steps.urls.outputs.deploy_url }}
+          PLAYWRIGHT_RESULT: ${{ steps.playwright.outcome }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          VALIDATION="VALID"
+
+          if [ "${JOB_STATUS}" != "success" ]; then
+            VALIDATION="INVALID"
+          fi
+
+          echo "# Deployment Validation Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "| Item | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "| Version | \`${VERSION}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Environment | \`${DEPLOY_ENV}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Artifact | \`microsite-${VERSION}.zip\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Playwright | ${PLAYWRIGHT_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Validation | **${VALIDATION}** |" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "## Live URL" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "${DEPLOY_URL}" >> "$GITHUB_STEP_SUMMARY"

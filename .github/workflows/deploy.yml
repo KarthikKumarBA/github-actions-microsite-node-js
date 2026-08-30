@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version, example 1.0.20"
+        description: "Release version, example 1.0.32"
         required: true
         type: string
 
@@ -27,252 +27,112 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  approval:
-    name: Approval - ${{ inputs.environment }}
+  validate:
+    name: Validate Deployment
     runs-on: ubuntu-latest
 
-    environment:
-      name: ${{ inputs.environment }}
-
     steps:
-      - name: Deployment approved
+      - name: Validate release version
         env:
-          DEPLOY_ENV: ${{ inputs.environment }}
-        run: |
-          echo "Approved for ${DEPLOY_ENV}"
-
-  deploy:
-    name: Deploy ${{ inputs.environment }}
-    needs: approval
-    runs-on: ubuntu-latest
-
-    environment:
-      name: github-pages
-      url: ${{ steps.urls.outputs.deploy_url }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v5
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v5
-        with:
-          node-version: '22'
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci --ignore-scripts
-
-      - name: Install Playwright Chromium
-        run: npx playwright install --with-deps chromium
-
-      - name: Download release artifact
-        env:
-          GH_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
+          DEPLOY_ENV: ${{ inputs.environment }}
+          GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
         run: |
-          gh release download "v${VERSION}" \
+          RELEASE_PATTERN='^[0-9]+\.[0-9]+\.[0-9]+$'
+
+          echo "Environment: ${DEPLOY_ENV}"
+          echo "Version: ${VERSION}"
+
+          if ! [[ "${VERSION}" =~ ${RELEASE_PATTERN} ]]; then
+            echo ""
+            echo "INVALID VERSION: ${VERSION}"
+            echo ""
+            echo "Only published release versions can be deployed."
+            echo ""
+            echo "Valid examples:"
+            echo "  1.0.32"
+            echo "  1.0.33"
+            echo "  2.1.0"
+            echo ""
+            echo "Invalid examples:"
+            echo "  1.0.10-SNAPSHOT-pr-9"
+            echo "  1.0.32-SNAPSHOT"
+            echo "  v1.0.32"
+            exit 1
+          fi
+
+          if ! gh release view "v${VERSION}" \
             --repo "${REPOSITORY}" \
-            --pattern "microsite-${VERSION}.zip"
+            >/dev/null 2>&1; then
 
-      - name: Verify downloaded artifact
-        env:
-          VERSION: ${{ inputs.version }}
-        run: |
-          test -f "microsite-${VERSION}.zip"
-          echo "Release artifact found"
-
-      - name: Extract release
-        env:
-          VERSION: ${{ inputs.version }}
-        run: |
-          rm -rf release
-          mkdir -p release
-
-          unzip \
-            "microsite-${VERSION}.zip" \
-            -d release
-
-          test -f release/index.html
-
-      - name: Restore existing Pages content
-        run: |
-          rm -rf site
-          mkdir -p site
-
-          if git ls-remote --exit-code origin refs/heads/pages-state; then
-            rm -rf pages-existing
-
-            git clone \
-              --single-branch \
-              --branch pages-state \
-              "https://github.com/${GITHUB_REPOSITORY}.git" \
-              pages-existing
-
-            cp -R pages-existing/. site/
-
-            rm -rf site/.git
-          else
-            echo "pages-state branch does not exist yet"
+            echo ""
+            echo "INVALID RELEASE"
+            echo ""
+            echo "GitHub Release v${VERSION} does not exist."
+            echo ""
+            echo "Use a version published by Release CI."
+            echo "Example: 1.0.32"
+            exit 1
           fi
 
-      - name: Prepare environment content
-        env:
-          DEPLOY_ENV: ${{ inputs.environment }}
-        run: |
-          if [ "${DEPLOY_ENV}" = "prod" ]; then
+          echo ""
+          echo "Release v${VERSION} exists."
+          echo "Deployment validation successful."
 
-            find site \
-              -maxdepth 1 \
-              -type f \
-              -delete
+  approve-uat:
+    name: UAT Approval
+    needs: validate
+    if: ${{ inputs.environment == 'uat' }}
+    runs-on: ubuntu-latest
 
-            cp -R release/. site/
+    environment:
+      name: uat
 
-          else
+    steps:
+      - name: UAT approved
+        run: echo "UAT deployment approved"
 
-            rm -rf "site/${DEPLOY_ENV}"
+  approve-prod:
+    name: Production Approval
+    needs: validate
+    if: ${{ inputs.environment == 'prod' }}
+    runs-on: ubuntu-latest
 
-            mkdir -p "site/${DEPLOY_ENV}"
+    environment:
+      name: prod
 
-            cp -R release/. \
-              "site/${DEPLOY_ENV}/"
+    steps:
+      - name: Production approved
+        run: echo "Production deployment approved"
 
-          fi
+  deploy-dev:
+    name: Deploy dev
+    needs: validate
+    if: ${{ inputs.environment == 'dev' }}
+    uses: ./.github/workflows/reusable-deploy.yml
+    with:
+      version: ${{ inputs.version }}
+      environment: dev
 
-      - name: Verify Pages content
-        env:
-          DEPLOY_ENV: ${{ inputs.environment }}
-        run: |
-          if [ "${DEPLOY_ENV}" = "prod" ]; then
-            test -f site/index.html
-          else
-            test -f "site/${DEPLOY_ENV}/index.html"
-          fi
+  deploy-uat:
+    name: Deploy uat
+    needs:
+      - validate
+      - approve-uat
+    if: ${{ inputs.environment == 'uat' }}
+    uses: ./.github/workflows/reusable-deploy.yml
+    with:
+      version: ${{ inputs.version }}
+      environment: uat
 
-          echo "Pages content verified"
-
-      - name: Save Pages state
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          VERSION: ${{ inputs.version }}
-          DEPLOY_ENV: ${{ inputs.environment }}
-        run: |
-          rm -rf pages-state-work
-
-          mkdir -p pages-state-work
-
-          cp -R site/. pages-state-work/
-
-          cd pages-state-work
-
-          git init
-          git checkout -b pages-state
-
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
-
-          git add .
-
-          git commit \
-            -m "deploy ${VERSION} to ${DEPLOY_ENV}"
-
-          git remote add origin \
-            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-
-          git push \
-            --force \
-            origin pages-state
-
-      - name: Configure GitHub Pages
-        uses: actions/configure-pages@v5
-
-      - name: Upload GitHub Pages artifact
-        uses: actions/upload-pages-artifact@v4
-        with:
-          path: site
-
-      - name: Deploy GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v5
-
-      - name: Calculate deployment URL
-        id: urls
-        env:
-          PAGE_URL: ${{ steps.deployment.outputs.page_url }}
-          DEPLOY_ENV: ${{ inputs.environment }}
-        run: |
-          BASE_URL="${PAGE_URL%/}"
-
-          if [ "${DEPLOY_ENV}" = "prod" ]; then
-            DEPLOY_URL="${BASE_URL}/"
-          else
-            DEPLOY_URL="${BASE_URL}/${DEPLOY_ENV}/"
-          fi
-
-          echo "deploy_url=${DEPLOY_URL}" >> "$GITHUB_OUTPUT"
-
-          echo "Deployment URL: ${DEPLOY_URL}"
-
-      - name: Wait for GitHub Pages
-        env:
-          DEPLOY_URL: ${{ steps.urls.outputs.deploy_url }}
-        run: |
-          echo "Waiting for ${DEPLOY_URL}"
-
-          for i in {1..12}; do
-
-            STATUS=$(curl \
-              -L \
-              -s \
-              -o /dev/null \
-              -w "%{http_code}" \
-              "${DEPLOY_URL}")
-
-            echo "Attempt ${i}: HTTP ${STATUS}"
-
-            if [ "${STATUS}" = "200" ]; then
-              echo "GitHub Pages is ready"
-              exit 0
-            fi
-
-            sleep 10
-
-          done
-
-          echo "GitHub Pages did not become ready"
-          exit 1
-
-      - name: Run Playwright post-deployment test
-        id: playwright
-        env:
-          DEPLOY_URL: ${{ steps.urls.outputs.deploy_url }}
-        run: |
-          npx playwright test
-
-      - name: Deployment Summary
-        if: always()
-        env:
-          VERSION: ${{ inputs.version }}
-          DEPLOY_ENV: ${{ inputs.environment }}
-          DEPLOY_URL: ${{ steps.urls.outputs.deploy_url }}
-          PLAYWRIGHT_RESULT: ${{ steps.playwright.outcome }}
-          JOB_STATUS: ${{ job.status }}
-        run: |
-          echo "## Deployment Summary" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-
-          echo "| Item | Value |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
-
-          echo "| Version | \`${VERSION}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Environment | \`${DEPLOY_ENV}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Artifact | \`microsite-${VERSION}.zip\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Playwright | ${PLAYWRIGHT_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Deployment | ${JOB_STATUS} |" >> "$GITHUB_STEP_SUMMARY"
-
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "### Live URL" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "${DEPLOY_URL}" >> "$GITHUB_STEP_SUMMARY"
+  deploy-prod:
+    name: Deploy prod
+    needs:
+      - validate
+      - approve-prod
+    if: ${{ inputs.environment == 'prod' }}
+    uses: ./.github/workflows/reusable-deploy.yml
+    with:
+      version: ${{ inputs.version }}
+      environment: prod
