@@ -1,62 +1,30 @@
-name: Reusable Security
+name: Reusable CI
 
 on:
   workflow_call:
-    secrets:
-      SONAR_TOKEN:
+    inputs:
+      version:
+        description: Release version
         required: true
+        type: string
 
-    outputs:
-      sonar-bugs:
-        value: ${{ jobs.sonar.outputs.bugs }}
-
-      sonar-vulnerabilities:
-        value: ${{ jobs.sonar.outputs.vulnerabilities }}
-
-      sonar-hotspots:
-        value: ${{ jobs.sonar.outputs.hotspots }}
-
-      sonar-code-smells:
-        value: ${{ jobs.sonar.outputs.code-smells }}
-
-      sonar-coverage:
-        value: ${{ jobs.sonar.outputs.coverage }}
-
-      sonar-duplications:
-        value: ${{ jobs.sonar.outputs.duplications }}
-
-      sonar-quality-gate:
-        value: ${{ jobs.sonar.outputs.quality-gate }}
-
-      trivy-critical:
-        value: ${{ jobs.trivy.outputs.critical }}
-
-      trivy-high:
-        value: ${{ jobs.trivy.outputs.high }}
+      artifact-name:
+        description: Artifact name
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 jobs:
-  sonar:
-    name: SonarQube Cloud Analysis
+  build:
+    name: Build and Test
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
-    outputs:
-      bugs: ${{ steps.sonar-results.outputs.bugs }}
-      vulnerabilities: ${{ steps.sonar-results.outputs.vulnerabilities }}
-      hotspots: ${{ steps.sonar-results.outputs.hotspots }}
-      code-smells: ${{ steps.sonar-results.outputs.code_smells }}
-      coverage: ${{ steps.sonar-results.outputs.coverage }}
-      duplications: ${{ steps.sonar-results.outputs.duplications }}
-      quality-gate: ${{ steps.sonar-results.outputs.quality_gate }}
-
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v5
@@ -67,117 +35,38 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
-      - name: Generate unit test coverage
+      - name: Lint JavaScript
+        run: npm run lint
+
+      - name: Lint HTML
+        run: npm run lint:html
+
+      - name: Check formatting
+        run: npm run format:check
+
+      - name: Unit tests and coverage
         run: npm run test:coverage
 
-      - name: Verify coverage report
-        run: test -f coverage/lcov.info
+      - name: Build application
+        run: npm run build
 
-      - name: SonarQube Cloud Scan
-        uses: SonarSource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: https://sonarcloud.io
-
-      - name: SonarQube Quality Gate
-        uses: SonarSource/sonarqube-quality-gate-action@7a5fffe8e523c40e0c740b6bc2712ab503e52efa
-        timeout-minutes: 5
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-
-      - name: Collect SonarQube results
-        id: sonar-results
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      - name: Verify build
         run: |
-          PROJECT_KEY=$(grep '^sonar.projectKey=' sonar-project.properties | cut -d= -f2)
+          test -d dist
+          test -f dist/index.html
 
-          METRICS=$(curl -s \
-            -u "${SONAR_TOKEN}:" \
-            "https://sonarcloud.io/api/measures/component?component=${PROJECT_KEY}&metricKeys=bugs,vulnerabilities,security_hotspots,code_smells,coverage,duplicated_lines_density")
+      - name: Create package
+        env:
+          ARTIFACT_NAME: ${{ inputs.artifact-name }}
+        run: |
+          cd dist
+          zip -r "../${ARTIFACT_NAME}.zip" .
+          cd ..
 
-          BUGS=$(echo "$METRICS" | jq -r '.component.measures[] | select(.metric=="bugs") | .value // "0"')
-          VULNERABILITIES=$(echo "$METRICS" | jq -r '.component.measures[] | select(.metric=="vulnerabilities") | .value // "0"')
-          HOTSPOTS=$(echo "$METRICS" | jq -r '.component.measures[] | select(.metric=="security_hotspots") | .value // "0"')
-          CODE_SMELLS=$(echo "$METRICS" | jq -r '.component.measures[] | select(.metric=="code_smells") | .value // "0"')
-          COVERAGE=$(echo "$METRICS" | jq -r '.component.measures[] | select(.metric=="coverage") | .value // "0"')
-          DUPLICATIONS=$(echo "$METRICS" | jq -r '.component.measures[] | select(.metric=="duplicated_lines_density") | .value // "0"')
-
-          QUALITY_GATE=$(curl -s \
-            -u "${SONAR_TOKEN}:" \
-            "https://sonarcloud.io/api/qualitygates/project_status?projectKey=${PROJECT_KEY}" \
-            | jq -r '.projectStatus.status')
-
-          echo "bugs=${BUGS}" >> "$GITHUB_OUTPUT"
-          echo "vulnerabilities=${VULNERABILITIES}" >> "$GITHUB_OUTPUT"
-          echo "hotspots=${HOTSPOTS}" >> "$GITHUB_OUTPUT"
-          echo "code_smells=${CODE_SMELLS}" >> "$GITHUB_OUTPUT"
-          echo "coverage=${COVERAGE}" >> "$GITHUB_OUTPUT"
-          echo "duplications=${DUPLICATIONS}" >> "$GITHUB_OUTPUT"
-          echo "quality_gate=${QUALITY_GATE}" >> "$GITHUB_OUTPUT"
-
-  trivy:
-    name: Trivy Security Scan
-    needs: sonar
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-
-    outputs:
-      critical: ${{ steps.trivy-results.outputs.critical }}
-      high: ${{ steps.trivy-results.outputs.high }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v5
-
-      - name: Trivy report
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+      - name: Upload CI artifact
+        uses: actions/upload-artifact@v6
         with:
-          scan-type: fs
-          scan-ref: .
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          exit-code: "0"
-          format: json
-          output: trivy-results.json
-
-      - name: Collect Trivy results
-        id: trivy-results
-        run: |
-          CRITICAL=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' trivy-results.json)
-          HIGH=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="HIGH")] | length' trivy-results.json)
-
-          echo "critical=${CRITICAL}" >> "$GITHUB_OUTPUT"
-          echo "high=${HIGH}" >> "$GITHUB_OUTPUT"
-
-          echo "Critical vulnerabilities: ${CRITICAL}"
-          echo "High vulnerabilities: ${HIGH}"
-
-      - name: Enforce Trivy security gate
-        run: |
-          CRITICAL=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' trivy-results.json)
-          HIGH=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="HIGH")] | length' trivy-results.json)
-
-          if [ "${CRITICAL}" -gt 0 ] || [ "${HIGH}" -gt 0 ]; then
-            echo "HIGH or CRITICAL vulnerabilities detected"
-
-            jq -r '
-              .Results[]?.Vulnerabilities[]?
-              | select(.Severity=="HIGH" or .Severity=="CRITICAL")
-              | "\(.Severity) | \(.VulnerabilityID) | \(.PkgName) | Installed: \(.InstalledVersion) | Fixed: \(.FixedVersion // "Not available")"
-            ' trivy-results.json
-
-            exit 1
-          fi
-
-  security-gate:
-    name: Security Quality Gate
-    needs:
-      - sonar
-      - trivy
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Validate security checks
-        run: |
-          echo "Security validation completed"
+          name: ${{ inputs.artifact-name }}
+          path: ${{ inputs.artifact-name }}.zip
+          retention-days: 30
+          if-no-files-found: error

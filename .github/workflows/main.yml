@@ -91,6 +91,7 @@ jobs:
 
           TRIVY_CRITICAL: ${{ needs.security.outputs.trivy-critical }}
           TRIVY_HIGH: ${{ needs.security.outputs.trivy-high }}
+
         run: |
           VALIDATION="VALID"
 
@@ -111,14 +112,12 @@ jobs:
           echo "| Validation | **${VALIDATION}** |" >> "$GITHUB_STEP_SUMMARY"
 
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "## Build Validation" >> "$GITHUB_STEP_SUMMARY"
+          echo "## CI Validation" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
 
           echo "| Check | Result |" >> "$GITHUB_STEP_SUMMARY"
           echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Lint | ${CI_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Unit Tests | ${CI_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Build | ${CI_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Build / Test / Lint | ${CI_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
 
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "## SonarQube" >> "$GITHUB_STEP_SUMMARY"
@@ -127,12 +126,12 @@ jobs:
           echo "| Metric | Result |" >> "$GITHUB_STEP_SUMMARY"
           echo "|---|---:|" >> "$GITHUB_STEP_SUMMARY"
           echo "| Quality Gate | ${SONAR_GATE:-Unavailable} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Bugs | ${SONAR_BUGS:-0} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Vulnerabilities | ${SONAR_VULNERABILITIES:-0} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Security Hotspots | ${SONAR_HOTSPOTS:-0} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Code Smells | ${SONAR_SMELLS:-0} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Coverage | ${SONAR_COVERAGE:-0}% |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Duplications | ${SONAR_DUPLICATIONS:-0}% |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Bugs | ${SONAR_BUGS:-Unavailable} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Vulnerabilities | ${SONAR_VULNERABILITIES:-Unavailable} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Security Hotspots | ${SONAR_HOTSPOTS:-Unavailable} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Code Smells | ${SONAR_SMELLS:-Unavailable} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Coverage | ${SONAR_COVERAGE:-Unavailable}% |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Duplications | ${SONAR_DUPLICATIONS:-Unavailable}% |" >> "$GITHUB_STEP_SUMMARY"
 
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "## Trivy" >> "$GITHUB_STEP_SUMMARY"
@@ -140,8 +139,8 @@ jobs:
 
           echo "| Severity | Vulnerabilities |" >> "$GITHUB_STEP_SUMMARY"
           echo "|---|---:|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Critical | ${TRIVY_CRITICAL:-0} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| High | ${TRIVY_HIGH:-0} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Critical | ${TRIVY_CRITICAL:-Unavailable} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| High | ${TRIVY_HIGH:-Unavailable} |" >> "$GITHUB_STEP_SUMMARY"
 
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "## Release" >> "$GITHUB_STEP_SUMMARY"
@@ -149,18 +148,15 @@ jobs:
 
           echo "| Check | Result |" >> "$GITHUB_STEP_SUMMARY"
           echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| GitHub Release | ${RELEASE_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Release Version | \`v${VERSION}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Release | ${RELEASE_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Version | \`v${VERSION}\` |" >> "$GITHUB_STEP_SUMMARY"
 
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "---" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
 
           if [ "${VALIDATION}" = "VALID" ]; then
             echo "## VALID" >> "$GITHUB_STEP_SUMMARY"
-            echo "Release artifact passed required validation." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "## INVALID" >> "$GITHUB_STEP_SUMMARY"
-            echo "Release artifact did not pass required validation." >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
