@@ -1168,4 +1168,4 @@ The overall design demonstrates:
 - Least-privilege permissions
 - Production approval controls
 - Automated GitHub Pages deployment
-- Deployment traceability
+- Deployment traceability 
