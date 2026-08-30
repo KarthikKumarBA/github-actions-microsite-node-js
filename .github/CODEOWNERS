@@ -1,12 +1,12 @@
 # Default repository ownership
-* @YOUR-GITHUB-USERNAME
+* @KarthikKumarBA
 
 # CI/CD pipeline ownership
-.github/workflows/ @YOUR-GITHUB-USERNAME
+.github/workflows/ @KarthikKumarBA
 
 # Security configuration
-sonar-project.properties @YOUR-GITHUB-USERNAME
+sonar-project.properties @KarthikKumarBA
 
 # Dependency management
-package.json @YOUR-GITHUB-USERNAME
-package-lock.json @YOUR-GITHUB-USERNAME
+package.json @KarthikKumarBA
+package-lock.json @KarthikKumarBA
