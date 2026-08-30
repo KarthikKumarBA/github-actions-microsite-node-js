@@ -92,7 +92,8 @@ jobs:
             "repos/${REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" \
             > snapshot-download/artifact.zip
 
-          unzip snapshot-download/artifact.zip \
+          unzip \
+            snapshot-download/artifact.zip \
             -d snapshot-download/content
 
           cp \
@@ -113,30 +114,33 @@ jobs:
           rm -rf release
           mkdir -p release
 
-          unzip "microsite-${VERSION}.zip" -d release
+          unzip \
+            "microsite-${VERSION}.zip" \
+            -d release
 
           test -f release/index.html
 
           echo "Release content:"
           find release -maxdepth 2 -type f | sort
 
-      - name: Restore existing Pages state
+      - name: Restore existing Pages content
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           rm -rf site
           rm -rf pages-existing
+
           mkdir -p site
 
-          if git ls-remote \
-            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
-            refs/heads/pages-state | grep -q pages-state; then
+          REPO_URL="https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+          if git ls-remote "${REPO_URL}" refs/heads/pages-state | grep -q pages-state; then
 
             git clone \
               --depth 1 \
               --single-branch \
               --branch pages-state \
-              "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+              "${REPO_URL}" \
               pages-existing
 
             cp -R pages-existing/. site/
@@ -390,14 +394,41 @@ jobs:
 
           exit 1
 
-      - name: Update deployment state
+      - name: Save successful deployment state
         if: ${{ steps.validation.outputs.valid == 'true' }}
         env:
+          GITHUB_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
           DEPLOY_ENV: ${{ inputs.environment }}
           DEPLOY_ACTION: ${{ inputs.deployment_action }}
         run: |
-          STATE_DIR="site/.deployment-state"
+          rm -rf pages-state-work
+
+          REPO_URL="https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+          if git ls-remote "${REPO_URL}" refs/heads/pages-state | grep -q pages-state; then
+
+            git clone \
+              --depth 1 \
+              --single-branch \
+              --branch pages-state \
+              "${REPO_URL}" \
+              pages-state-work
+
+          else
+
+            mkdir -p pages-state-work
+
+            cd pages-state-work
+
+            git init
+            git checkout -b pages-state
+            git remote add origin "${REPO_URL}"
+
+            cd ..
+          fi
+
+          STATE_DIR="pages-state-work/.deployment-state"
           STATE_FILE="${STATE_DIR}/deployment-state.json"
 
           mkdir -p "${STATE_DIR}"
@@ -490,69 +521,26 @@ jobs:
             mv "${STATE_FILE}.tmp" "${STATE_FILE}"
           fi
 
-          echo "Updated deployment state:"
+          echo "State before commit:"
           jq . "${STATE_FILE}"
-
-      - name: Save Pages state
-        if: ${{ steps.validation.outputs.valid == 'true' }}
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          VERSION: ${{ inputs.version }}
-          DEPLOY_ENV: ${{ inputs.environment }}
-        run: |
-          rm -rf pages-state-work
-
-          if git ls-remote \
-            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
-            refs/heads/pages-state | grep -q pages-state; then
-
-            git clone \
-              --single-branch \
-              --branch pages-state \
-              "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
-              pages-state-work
-
-            rsync \
-              -a \
-              --delete \
-              --exclude=".git" \
-              site/ \
-              pages-state-work/
-
-          else
-
-            mkdir -p pages-state-work
-
-            rsync \
-              -a \
-              --delete \
-              site/ \
-              pages-state-work/
-
-            cd pages-state-work
-
-            git init
-            git checkout -b pages-state
-
-            git remote add origin \
-              "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-
-            cd ..
-          fi
 
           cd pages-state-work
 
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add -A
+          git add .deployment-state/deployment-state.json
 
           if git diff --cached --quiet; then
-            echo "No Pages state changes to save."
-          else
-            git commit -m "deploy ${VERSION} to ${DEPLOY_ENV}"
-            git push origin pages-state
+            echo "ERROR: deployment state did not change."
+            exit 1
           fi
+
+          git commit -m "deployment state: ${DEPLOY_ENV} ${VERSION}"
+
+          git push origin HEAD:pages-state
+
+          echo "Deployment state pushed successfully."
 
       - name: Verify saved deployment state
         if: ${{ steps.validation.outputs.valid == 'true' }}
@@ -573,9 +561,12 @@ jobs:
           STATE_FILE="verify-pages-state/.deployment-state/deployment-state.json"
 
           if [ ! -f "${STATE_FILE}" ]; then
-            echo "Deployment state file not found."
+            echo "Deployment state file was not found after save."
             exit 1
           fi
+
+          echo "Persisted deployment state:"
+          jq . "${STATE_FILE}"
 
           if [ "${DEPLOY_ENV}" = "uat" ]; then
 
