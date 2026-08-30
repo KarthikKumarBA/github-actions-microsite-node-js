@@ -899,7 +899,7 @@ The expected enterprise release process is:
 ```text
 1. Developer creates feature branch
 
-2. Developer makes changes
+2. Developer makes changes 
 
 3. Developer runs local validation
 
@@ -1168,4 +1168,4 @@ The overall design demonstrates:
 - Least-privilege permissions
 - Production approval controls
 - Automated GitHub Pages deployment
-- Deployment traceability 
+- Deployment traceability
