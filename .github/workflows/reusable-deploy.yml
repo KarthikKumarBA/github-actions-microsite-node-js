@@ -29,7 +29,6 @@ permissions:
 jobs:
   deploy:
     name: Deploy ${{ inputs.environment }}
-
     runs-on: ubuntu-latest
 
     environment:
@@ -74,11 +73,13 @@ jobs:
 
           ARTIFACT_ID=$(gh api \
             "repos/${REPOSITORY}/actions/artifacts?name=${ARTIFACT_NAME}" \
-            --jq '.artifacts
-                  | map(select(.expired == false))
-                  | sort_by(.created_at)
-                  | reverse
-                  | .[0].id // empty')
+            --jq '
+              .artifacts
+              | map(select(.expired == false))
+              | sort_by(.created_at)
+              | reverse
+              | .[0].id // empty
+            ')
 
           if [ -z "${ARTIFACT_ID}" ]; then
             echo "Snapshot artifact not found: ${ARTIFACT_NAME}"
@@ -91,8 +92,7 @@ jobs:
             "repos/${REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" \
             > snapshot-download/artifact.zip
 
-          unzip \
-            snapshot-download/artifact.zip \
+          unzip snapshot-download/artifact.zip \
             -d snapshot-download/content
 
           cp \
@@ -113,25 +113,27 @@ jobs:
           rm -rf release
           mkdir -p release
 
-          unzip \
-            "microsite-${VERSION}.zip" \
-            -d release
+          unzip "microsite-${VERSION}.zip" -d release
 
           test -f release/index.html
+
+          echo "Release content:"
+          find release -maxdepth 2 -type f | sort
 
       - name: Restore existing Pages state
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           rm -rf site
-          mkdir -p site
           rm -rf pages-existing
+          mkdir -p site
 
           if git ls-remote \
             "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
             refs/heads/pages-state | grep -q pages-state; then
 
             git clone \
+              --depth 1 \
               --single-branch \
               --branch pages-state \
               "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
@@ -139,12 +141,16 @@ jobs:
 
             cp -R pages-existing/. site/
             rm -rf site/.git
+
+          else
+            echo "pages-state branch does not exist yet."
           fi
 
       - name: Backup current deployment
         run: |
           rm -rf site-before-deploy
           mkdir -p site-before-deploy
+
           cp -R site/. site-before-deploy/
 
       - name: Read deployment state
@@ -155,16 +161,24 @@ jobs:
           UAT_VERSION=""
           CURRENT_PROD=""
           PREVIOUS_PROD=""
+          PROD_HISTORY_COUNT="0"
 
           if [ -f "${STATE_FILE}" ]; then
             UAT_VERSION=$(jq -r '.uat_version // ""' "${STATE_FILE}")
             CURRENT_PROD=$(jq -r '.prod_current_version // ""' "${STATE_FILE}")
             PREVIOUS_PROD=$(jq -r '.prod_previous_version // ""' "${STATE_FILE}")
+            PROD_HISTORY_COUNT=$(jq -r '.prod_history // [] | length' "${STATE_FILE}")
           fi
 
           echo "uat_version=${UAT_VERSION}" >> "$GITHUB_OUTPUT"
           echo "current_prod=${CURRENT_PROD}" >> "$GITHUB_OUTPUT"
           echo "previous_prod=${PREVIOUS_PROD}" >> "$GITHUB_OUTPUT"
+          echo "prod_history_count=${PROD_HISTORY_COUNT}" >> "$GITHUB_OUTPUT"
+
+          echo "UAT: ${UAT_VERSION:-None}"
+          echo "PROD Current: ${CURRENT_PROD:-None}"
+          echo "PROD Previous: ${PREVIOUS_PROD:-None}"
+          echo "PROD History: ${PROD_HISTORY_COUNT}"
 
       - name: Prepare environment content
         env:
@@ -172,12 +186,41 @@ jobs:
         run: |
           if [ "${DEPLOY_ENV}" = "prod" ]; then
 
-            find site \
-              -maxdepth 1 \
-              -type f \
-              -delete
+            rm -rf preserve-pages
+            mkdir -p preserve-pages
+
+            if [ -d "site/dev" ]; then
+              cp -R site/dev preserve-pages/dev
+            fi
+
+            if [ -d "site/uat" ]; then
+              cp -R site/uat preserve-pages/uat
+            fi
+
+            if [ -d "site/.deployment-state" ]; then
+              cp -R \
+                site/.deployment-state \
+                preserve-pages/.deployment-state
+            fi
+
+            rm -rf site
+            mkdir -p site
 
             cp -R release/. site/
+
+            if [ -d "preserve-pages/dev" ]; then
+              cp -R preserve-pages/dev site/dev
+            fi
+
+            if [ -d "preserve-pages/uat" ]; then
+              cp -R preserve-pages/uat site/uat
+            fi
+
+            if [ -d "preserve-pages/.deployment-state" ]; then
+              cp -R \
+                preserve-pages/.deployment-state \
+                site/.deployment-state
+            fi
 
           else
 
@@ -185,9 +228,10 @@ jobs:
             mkdir -p "site/${DEPLOY_ENV}"
 
             cp -R release/. "site/${DEPLOY_ENV}/"
+
           fi
 
-      - name: Verify Pages content
+      - name: Verify prepared Pages content
         env:
           DEPLOY_ENV: ${{ inputs.environment }}
         run: |
@@ -196,6 +240,8 @@ jobs:
           else
             test -f "site/${DEPLOY_ENV}/index.html"
           fi
+
+          echo "${DEPLOY_ENV} content verified."
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v6
@@ -242,7 +288,7 @@ jobs:
               -s \
               -o /dev/null \
               -w "%{http_code}" \
-              "${DEPLOY_URL}")
+              "${DEPLOY_URL}?deployment=${GITHUB_RUN_ID}")
 
             echo "Attempt ${i}: HTTP ${STATUS}"
 
@@ -285,18 +331,18 @@ jobs:
              [ "${PLAYWRIGHT_RESULT}" = "success" ]; then
 
             echo "valid=true" >> "$GITHUB_OUTPUT"
+            echo "Deployment validation: VALID"
 
           else
 
             echo "valid=false" >> "$GITHUB_OUTPUT"
+            echo "Deployment validation: INVALID"
+
           fi
 
       - name: Restore previous PROD content
         if: ${{ inputs.environment == 'prod' && steps.validation.outputs.valid == 'false' }}
         run: |
-          echo "Production validation failed."
-          echo "Restoring previous known-good production content."
-
           rm -rf site
           mkdir -p site
 
@@ -330,19 +376,18 @@ jobs:
               -s \
               -o /dev/null \
               -w "%{http_code}" \
-              "${DEPLOY_URL}")
+              "${DEPLOY_URL}?rollback=${GITHUB_RUN_ID}")
 
             echo "Rollback check ${i}: HTTP ${STATUS}"
 
             if [ "${STATUS}" = "200" ]; then
-              echo "Rollback successful"
+              echo "Automatic PROD rollback successful."
               exit 0
             fi
 
             sleep 10
           done
 
-          echo "Automatic rollback validation failed"
           exit 1
 
       - name: Update deployment state
@@ -351,7 +396,6 @@ jobs:
           VERSION: ${{ inputs.version }}
           DEPLOY_ENV: ${{ inputs.environment }}
           DEPLOY_ACTION: ${{ inputs.deployment_action }}
-          CURRENT_PROD: ${{ steps.state.outputs.current_prod }}
         run: |
           STATE_DIR="site/.deployment-state"
           STATE_FILE="${STATE_DIR}/deployment-state.json"
@@ -390,8 +434,8 @@ jobs:
               --arg version "${VERSION}" \
               --arg deployed_at "${DEPLOYED_AT}" \
               '
-              .uat_version = $version
-              | .uat_deployed_at = $deployed_at
+                .uat_version = $version
+                | .uat_deployed_at = $deployed_at
               ' \
               "${STATE_FILE}" > "${STATE_FILE}.tmp"
 
@@ -400,26 +444,46 @@ jobs:
 
           if [ "${DEPLOY_ENV}" = "prod" ]; then
 
+            PREVIOUS_DISTINCT=$(jq -r \
+              --arg current "${VERSION}" \
+              '
+                [
+                  (.prod_current_version // ""),
+                  (.prod_history // [])[].version
+                ]
+                | map(select(. != "" and . != $current))
+                | .[0] // ""
+              ' \
+              "${STATE_FILE}")
+
             jq \
               --arg version "${VERSION}" \
-              --arg previous "${CURRENT_PROD}" \
+              --arg previous "${PREVIOUS_DISTINCT}" \
               --arg deployed_at "${DEPLOYED_AT}" \
               --arg action "${DEPLOY_ACTION}" \
               --arg actor "${GITHUB_ACTOR}" \
               --arg run_id "${GITHUB_RUN_ID}" \
+              --arg workflow "${GITHUB_WORKFLOW}" \
+              --arg commit "${GITHUB_SHA}" \
               '
-              .prod_current_version = $version
-              | .prod_previous_version = $previous
-              | .prod_deployed_at = $deployed_at
-              | .prod_history = (
-                  [{
-                    "version": $version,
-                    "deployed_at": $deployed_at,
-                    "action": $action,
-                    "actor": $actor,
-                    "run_id": $run_id
-                  }] + (.prod_history // [])
-                )
+                .prod_current_version = $version
+                | .prod_previous_version = $previous
+                | .prod_deployed_at = $deployed_at
+                | .prod_history = (
+                    [
+                      {
+                        "version": $version,
+                        "deployed_at": $deployed_at,
+                        "action": $action,
+                        "actor": $actor,
+                        "run_id": $run_id,
+                        "workflow": $workflow,
+                        "commit": $commit
+                      }
+                    ]
+                    +
+                    (.prod_history // [])
+                  )
               ' \
               "${STATE_FILE}" > "${STATE_FILE}.tmp"
 
@@ -427,7 +491,7 @@ jobs:
           fi
 
           echo "Updated deployment state:"
-          cat "${STATE_FILE}"
+          jq . "${STATE_FILE}"
 
       - name: Save Pages state
         if: ${{ steps.validation.outputs.valid == 'true' }}
@@ -485,12 +549,61 @@ jobs:
 
           if git diff --cached --quiet; then
             echo "No Pages state changes to save."
-            exit 0
+          else
+            git commit -m "deploy ${VERSION} to ${DEPLOY_ENV}"
+            git push origin pages-state
           fi
 
-          git commit -m "deploy ${VERSION} to ${DEPLOY_ENV}"
+      - name: Verify saved deployment state
+        if: ${{ steps.validation.outputs.valid == 'true' }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          DEPLOY_ENV: ${{ inputs.environment }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          rm -rf verify-pages-state
 
-          git push origin pages-state
+          git clone \
+            --depth 1 \
+            --single-branch \
+            --branch pages-state \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            verify-pages-state
+
+          STATE_FILE="verify-pages-state/.deployment-state/deployment-state.json"
+
+          if [ ! -f "${STATE_FILE}" ]; then
+            echo "Deployment state file not found."
+            exit 1
+          fi
+
+          if [ "${DEPLOY_ENV}" = "uat" ]; then
+
+            SAVED_VERSION=$(jq -r '.uat_version // ""' "${STATE_FILE}")
+
+            echo "Expected UAT version: ${VERSION}"
+            echo "Saved UAT version:    ${SAVED_VERSION}"
+
+            if [ "${SAVED_VERSION}" != "${VERSION}" ]; then
+              echo "UAT state verification failed."
+              exit 1
+            fi
+          fi
+
+          if [ "${DEPLOY_ENV}" = "prod" ]; then
+
+            SAVED_VERSION=$(jq -r '.prod_current_version // ""' "${STATE_FILE}")
+
+            echo "Expected PROD version: ${VERSION}"
+            echo "Saved PROD version:    ${SAVED_VERSION}"
+
+            if [ "${SAVED_VERSION}" != "${VERSION}" ]; then
+              echo "PROD state verification failed."
+              exit 1
+            fi
+          fi
+
+          echo "Deployment state verification successful."
 
       - name: Get PROD approval details
         id: approval
@@ -591,6 +704,14 @@ jobs:
             echo "## Live URL" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "${DEPLOY_URL}" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "${STATUS}" = "VALID" ]; then
+            echo "## VALID" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## INVALID" >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Fail deployment after validation failure
