@@ -26,10 +26,6 @@ permissions:
   pages: write
   id-token: write
 
-concurrency:
-  group: pages-deployment
-  cancel-in-progress: false
-
 jobs:
   deploy:
     name: Deploy ${{ inputs.environment }}
@@ -58,12 +54,10 @@ jobs:
 
       - name: Download published release artifact
         if: ${{ inputs.artifact_source == 'release' }}
-
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
           REPOSITORY: ${{ github.repository }}
-
         run: |
           gh release download "v${VERSION}" \
             --repo "${REPOSITORY}" \
@@ -71,12 +65,10 @@ jobs:
 
       - name: Download PR snapshot artifact
         if: ${{ inputs.artifact_source == 'snapshot' }}
-
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
           REPOSITORY: ${{ github.repository }}
-
         run: |
           ARTIFACT_NAME="microsite-${VERSION}"
 
@@ -110,7 +102,6 @@ jobs:
       - name: Verify artifact
         env:
           VERSION: ${{ inputs.version }}
-
         run: |
           test -f "microsite-${VERSION}.zip"
           echo "Artifact verified: microsite-${VERSION}.zip"
@@ -118,7 +109,6 @@ jobs:
       - name: Extract artifact
         env:
           VERSION: ${{ inputs.version }}
-
         run: |
           rm -rf release
           mkdir -p release
@@ -132,7 +122,6 @@ jobs:
       - name: Restore existing Pages state
         env:
           GITHUB_TOKEN: ${{ github.token }}
-
         run: |
           rm -rf site
           mkdir -p site
@@ -156,12 +145,10 @@ jobs:
         run: |
           rm -rf site-before-deploy
           mkdir -p site-before-deploy
-
           cp -R site/. site-before-deploy/
 
       - name: Read deployment state
         id: state
-
         run: |
           STATE_FILE="site/.deployment-state/deployment-state.json"
 
@@ -182,7 +169,6 @@ jobs:
       - name: Prepare environment content
         env:
           DEPLOY_ENV: ${{ inputs.environment }}
-
         run: |
           if [ "${DEPLOY_ENV}" = "prod" ]; then
 
@@ -204,7 +190,6 @@ jobs:
       - name: Verify Pages content
         env:
           DEPLOY_ENV: ${{ inputs.environment }}
-
         run: |
           if [ "${DEPLOY_ENV}" = "prod" ]; then
             test -f site/index.html
@@ -223,19 +208,15 @@ jobs:
 
       - name: Deploy GitHub Pages
         id: deployment
-
         uses: actions/deploy-pages@v5
-
         with:
           artifact_name: github-pages
 
       - name: Calculate deployment URL
         id: urls
-
         env:
           PAGE_URL: ${{ steps.deployment.outputs.page_url }}
           DEPLOY_ENV: ${{ inputs.environment }}
-
         run: |
           BASE_URL="${PAGE_URL%/}"
 
@@ -250,12 +231,9 @@ jobs:
 
       - name: Wait for GitHub Pages
         id: health
-
         continue-on-error: true
-
         env:
           DEPLOY_URL: ${{ steps.urls.outputs.deploy_url }}
-
         run: |
           for i in {1..12}; do
 
@@ -279,24 +257,18 @@ jobs:
 
       - name: Run Playwright post-deployment test
         id: playwright
-
         if: ${{ steps.health.outcome == 'success' }}
-
         continue-on-error: true
-
         env:
           DEPLOY_URL: ${{ steps.urls.outputs.deploy_url }}
           DEPLOY_ENV: ${{ inputs.environment }}
           PLAYWRIGHT_HTML_OPEN: never
-
         run: |
           npx playwright test --reporter=html
 
       - name: Upload Playwright test report
         if: always()
-
         uses: actions/upload-artifact@v7
-
         with:
           name: playwright-report-${{ inputs.environment }}-${{ inputs.version }}
           path: playwright-report
@@ -305,11 +277,9 @@ jobs:
 
       - name: Determine validation result
         id: validation
-
         env:
           HEALTH_RESULT: ${{ steps.health.outcome }}
           PLAYWRIGHT_RESULT: ${{ steps.playwright.outcome }}
-
         run: |
           if [ "${HEALTH_RESULT}" = "success" ] && \
              [ "${PLAYWRIGHT_RESULT}" = "success" ]; then
@@ -323,7 +293,6 @@ jobs:
 
       - name: Restore previous PROD content
         if: ${{ inputs.environment == 'prod' && steps.validation.outputs.valid == 'false' }}
-
         run: |
           echo "Production validation failed."
           echo "Restoring previous known-good production content."
@@ -337,29 +306,22 @@ jobs:
 
       - name: Upload rollback Pages artifact
         if: ${{ inputs.environment == 'prod' && steps.validation.outputs.valid == 'false' }}
-
         uses: actions/upload-pages-artifact@v5
-
         with:
           name: github-pages-rollback
           path: site
 
       - name: Deploy automatic rollback
         id: rollback
-
         if: ${{ inputs.environment == 'prod' && steps.validation.outputs.valid == 'false' }}
-
         uses: actions/deploy-pages@v5
-
         with:
           artifact_name: github-pages-rollback
 
       - name: Verify automatic rollback
         if: ${{ inputs.environment == 'prod' && steps.validation.outputs.valid == 'false' }}
-
         env:
           DEPLOY_URL: ${{ steps.urls.outputs.deploy_url }}
-
         run: |
           for i in {1..12}; do
 
@@ -385,13 +347,11 @@ jobs:
 
       - name: Update deployment state
         if: ${{ steps.validation.outputs.valid == 'true' }}
-
         env:
           VERSION: ${{ inputs.version }}
           DEPLOY_ENV: ${{ inputs.environment }}
           DEPLOY_ACTION: ${{ inputs.deployment_action }}
           CURRENT_PROD: ${{ steps.state.outputs.current_prod }}
-
         run: |
           STATE_DIR="site/.deployment-state"
           STATE_FILE="${STATE_DIR}/deployment-state.json"
@@ -411,7 +371,6 @@ jobs:
           EOF
           fi
 
-          # Migrate older state files that do not yet contain prod_history.
           jq '
             .uat_version = (.uat_version // "")
             | .uat_deployed_at = (.uat_deployed_at // "")
@@ -472,12 +431,10 @@ jobs:
 
       - name: Save Pages state
         if: ${{ steps.validation.outputs.valid == 'true' }}
-
         env:
           GITHUB_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
           DEPLOY_ENV: ${{ inputs.environment }}
-
         run: |
           rm -rf pages-state-work
 
@@ -537,16 +494,12 @@ jobs:
 
       - name: Get PROD approval details
         id: approval
-
         if: ${{ inputs.environment == 'prod' }}
-
         continue-on-error: true
-
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
-
         run: |
           APPROVED_BY=$(gh api \
             "repos/${REPOSITORY}/actions/runs/${RUN_ID}/approvals" \
@@ -570,7 +523,6 @@ jobs:
 
       - name: Deployment Summary
         if: always()
-
         env:
           VERSION: ${{ inputs.version }}
           DEPLOY_ENV: ${{ inputs.environment }}
@@ -583,7 +535,6 @@ jobs:
           CURRENT_PROD: ${{ steps.state.outputs.current_prod }}
           ROLLBACK: ${{ steps.rollback.outcome }}
           APPROVED_BY: ${{ steps.approval.outputs.approved_by }}
-
         run: |
           STATUS="INVALID"
           HEALTH_STATUS="FAIL"
@@ -631,7 +582,6 @@ jobs:
 
           if [ "${DEPLOY_ENV}" = "prod" ] && \
              [ "${ROLLBACK}" = "success" ]; then
-
             echo "| Automatic Rollback | **SUCCESS** |" >> "$GITHUB_STEP_SUMMARY"
           fi
 
@@ -645,7 +595,6 @@ jobs:
 
       - name: Fail deployment after validation failure
         if: ${{ steps.validation.outputs.valid == 'false' }}
-
         run: |
           echo "Deployment validation failed."
 
