@@ -15,9 +15,26 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  validate-context:
+    name: Validate Release Context
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Validate branch
+        run: |
+          if [ "${GITHUB_REF}" != "refs/heads/main" ]; then
+            echo "Official releases can only be created from main."
+            exit 1
+          fi
+
+          echo "Release branch validated: main"
+
   ci:
     name: CI
+    needs: validate-context
+
     uses: ./.github/workflows/reusable-ci.yml
+
     with:
       version: 1.0.${{ github.run_number }}
       artifact-name: microsite-1.0.${{ github.run_number }}
@@ -25,7 +42,9 @@ jobs:
   security:
     name: Security
     needs: ci
+
     uses: ./.github/workflows/reusable-security.yml
+
     secrets:
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
@@ -64,24 +83,45 @@ jobs:
             --title "v${VERSION}" \
             --notes "Validated release ${VERSION}"
 
+  deploy-dev:
+    name: Auto Deploy DEV
+    needs: release
+
+    permissions:
+      actions: read
+      contents: write
+      pages: write
+      id-token: write
+
+    uses: ./.github/workflows/reusable-deploy.yml
+
+    with:
+      version: 1.0.${{ github.run_number }}
+      environment: dev
+      artifact_source: release
+      deployment_action: deploy
+
   summary:
     name: Final Validation Summary
+
     needs:
       - ci
       - security
       - release
+      - deploy-dev
+
     if: always()
+
     runs-on: ubuntu-latest
 
     steps:
       - name: Generate final validation summary
         env:
           VERSION: 1.0.${{ github.run_number }}
-
           CI_RESULT: ${{ needs.ci.result }}
           SECURITY_RESULT: ${{ needs.security.result }}
           RELEASE_RESULT: ${{ needs.release.result }}
-
+          DEV_RESULT: ${{ needs.deploy-dev.result }}
           SONAR_GATE: ${{ needs.security.outputs.sonar_quality_gate }}
           SONAR_BUGS: ${{ needs.security.outputs.sonar_bugs }}
           SONAR_VULNERABILITIES: ${{ needs.security.outputs.sonar_vulnerabilities }}
@@ -89,16 +129,15 @@ jobs:
           SONAR_SMELLS: ${{ needs.security.outputs.sonar_code_smells }}
           SONAR_COVERAGE: ${{ needs.security.outputs.sonar_coverage }}
           SONAR_DUPLICATIONS: ${{ needs.security.outputs.sonar_duplications }}
-
           TRIVY_CRITICAL: ${{ needs.security.outputs.trivy_critical }}
           TRIVY_HIGH: ${{ needs.security.outputs.trivy_high }}
-
         run: |
           VALIDATION="VALID"
 
           if [ "${CI_RESULT}" != "success" ] || \
              [ "${SECURITY_RESULT}" != "success" ] || \
-             [ "${RELEASE_RESULT}" != "success" ]; then
+             [ "${RELEASE_RESULT}" != "success" ] || \
+             [ "${DEV_RESULT}" != "success" ]; then
             VALIDATION="INVALID"
           fi
 
@@ -144,13 +183,13 @@ jobs:
           echo "| High | ${TRIVY_HIGH:-Unavailable} |" >> "$GITHUB_STEP_SUMMARY"
 
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "## Release" >> "$GITHUB_STEP_SUMMARY"
+          echo "## Release and Deployment" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
 
           echo "| Check | Result |" >> "$GITHUB_STEP_SUMMARY"
           echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Release | ${RELEASE_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Version | \`v${VERSION}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| GitHub Release | ${RELEASE_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Automatic DEV Deployment | ${DEV_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
 
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "---" >> "$GITHUB_STEP_SUMMARY"
@@ -158,7 +197,7 @@ jobs:
 
           if [ "${VALIDATION}" = "VALID" ]; then
             echo "## VALID" >> "$GITHUB_STEP_SUMMARY"
-            echo "Release passed all required validation checks." >> "$GITHUB_STEP_SUMMARY"
+            echo "Release passed validation and was automatically deployed to DEV." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "## INVALID" >> "$GITHUB_STEP_SUMMARY"
             echo "Release failed one or more required validation checks." >> "$GITHUB_STEP_SUMMARY"

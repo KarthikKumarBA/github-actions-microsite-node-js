@@ -1,0 +1,123 @@
+name: PROD History Cleanup
+
+on:
+  schedule:
+    - cron: "0 0 1 1 *"
+
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pages-deployment
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    name: Cleanup PROD Deployment History
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout pages-state
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+        run: |
+          if ! git ls-remote \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            refs/heads/pages-state | grep -q pages-state; then
+
+            echo "pages-state branch does not exist."
+            exit 0
+          fi
+
+          git clone \
+            --single-branch \
+            --branch pages-state \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            pages-state
+
+      - name: Cleanup PROD history
+        id: cleanup
+
+        run: |
+          STATE_FILE="pages-state/.deployment-state/deployment-state.json"
+
+          if [ ! -f "${STATE_FILE}" ]; then
+            echo "Deployment state file does not exist."
+            echo "before=0" >> "$GITHUB_OUTPUT"
+            echo "after=0" >> "$GITHUB_OUTPUT"
+            echo "deleted=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          BEFORE=$(jq '.prod_history // [] | length' "${STATE_FILE}")
+
+          jq '
+            .prod_history = (
+              (.prod_history // [])
+              | sort_by(.deployed_at)
+              | reverse
+              | .[:50]
+            )
+          ' "${STATE_FILE}" > "${STATE_FILE}.tmp"
+
+          mv "${STATE_FILE}.tmp" "${STATE_FILE}"
+
+          AFTER=$(jq '.prod_history // [] | length' "${STATE_FILE}")
+          DELETED=$((BEFORE - AFTER))
+
+          echo "before=${BEFORE}" >> "$GITHUB_OUTPUT"
+          echo "after=${AFTER}" >> "$GITHUB_OUTPUT"
+          echo "deleted=${DELETED}" >> "$GITHUB_OUTPUT"
+
+          echo "Records before cleanup: ${BEFORE}"
+          echo "Records retained: ${AFTER}"
+          echo "Records deleted: ${DELETED}"
+
+      - name: Save cleaned state
+        env:
+          BEFORE: ${{ steps.cleanup.outputs.before }}
+          AFTER: ${{ steps.cleanup.outputs.after }}
+
+        run: |
+          cd pages-state
+
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+          git add .deployment-state/deployment-state.json
+
+          if git diff --cached --quiet; then
+            echo "No PROD history cleanup required."
+            exit 0
+          fi
+
+          git commit -m "chore: retain latest 50 PROD deployments"
+
+          git push origin pages-state
+
+      - name: Cleanup Summary
+        if: always()
+
+        env:
+          BEFORE: ${{ steps.cleanup.outputs.before }}
+          AFTER: ${{ steps.cleanup.outputs.after }}
+          DELETED: ${{ steps.cleanup.outputs.deleted }}
+
+        run: |
+          echo "# PROD Deployment History Cleanup" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "| Item | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---:|" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "| History Before Cleanup | ${BEFORE:-0} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| History Retained | ${AFTER:-0} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| History Deleted | ${DELETED:-0} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Maximum Retained | 50 |" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Only deployment-state history was cleaned. GitHub Releases were not deleted." >> "$GITHUB_STEP_SUMMARY"

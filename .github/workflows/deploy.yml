@@ -39,7 +39,9 @@ concurrency:
 jobs:
   validate:
     name: Validate Deployment
+
     uses: ./.github/workflows/reusable-deploy-validate.yml
+
     with:
       action: ${{ inputs.action }}
       version: ${{ inputs.version }}
@@ -47,8 +49,11 @@ jobs:
 
   approve-uat:
     name: UAT Approval
+
     needs: validate
+
     if: ${{ inputs.environment == 'uat' && inputs.action == 'deploy' }}
+
     runs-on: ubuntu-latest
 
     environment:
@@ -60,8 +65,11 @@ jobs:
 
   approve-prod:
     name: Production Approval
+
     needs: validate
+
     if: ${{ inputs.environment == 'prod' }}
+
     runs-on: ubuntu-latest
 
     environment:
@@ -78,7 +86,9 @@ jobs:
 
   deploy-dev:
     name: Deploy dev
+
     needs: validate
+
     if: ${{ inputs.environment == 'dev' && inputs.action == 'deploy' }}
 
     uses: ./.github/workflows/reusable-deploy.yml
@@ -91,6 +101,7 @@ jobs:
 
   deploy-uat:
     name: Deploy uat
+
     needs:
       - validate
       - approve-uat
@@ -107,6 +118,7 @@ jobs:
 
   deploy-prod:
     name: Deploy prod
+
     needs:
       - validate
       - approve-prod

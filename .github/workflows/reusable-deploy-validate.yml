@@ -38,6 +38,7 @@ permissions:
 jobs:
   validate:
     name: Validate Deployment Request
+
     runs-on: ubuntu-latest
 
     outputs:
@@ -68,12 +69,14 @@ jobs:
 
       - name: Validate deployment request
         id: validate
+
         env:
           INPUT_VERSION: ${{ inputs.version }}
           DEPLOY_ENV: ${{ inputs.environment }}
           DEPLOY_ACTION: ${{ inputs.action }}
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
+
         run: |
           RELEASE_PATTERN='^[0-9]+\.[0-9]+\.[0-9]+$'
           SNAPSHOT_PATTERN='^[0-9]+\.[0-9]+\.[0-9]+-SNAPSHOT-pr-[0-9]+$'
@@ -110,7 +113,7 @@ jobs:
                [ -z "${PREVIOUS_PROD_VERSION}" ]; then
 
               VALIDATION="INVALID"
-              FAILURE_REASON="No previous PROD version is recorded for rollback."
+              FAILURE_REASON="No previous successful PROD version is recorded."
             fi
 
             if [ "${VALIDATION}" = "VALID" ]; then
@@ -140,8 +143,10 @@ jobs:
                [[ "${INPUT_VERSION}" =~ ${SNAPSHOT_PATTERN} ]]; then
 
               if [ "${DEPLOY_ENV}" != "dev" ]; then
+
                 VALIDATION="INVALID"
                 FAILURE_REASON="PR SNAPSHOT versions can only be deployed to DEV."
+
               else
 
                 ARTIFACT_NAME="microsite-${INPUT_VERSION}"
@@ -155,9 +160,12 @@ jobs:
                         | .[0].id // empty')
 
                 if [ -z "${ARTIFACT_ID}" ]; then
+
                   VALIDATION="INVALID"
                   FAILURE_REASON="Snapshot artifact ${ARTIFACT_NAME} was not found or has expired."
+
                 else
+
                   ARTIFACT_SOURCE="snapshot"
                 fi
               fi
@@ -171,7 +179,9 @@ jobs:
 
                 VALIDATION="INVALID"
                 FAILURE_REASON="GitHub Release v${INPUT_VERSION} does not exist."
+
               else
+
                 ARTIFACT_SOURCE="release"
               fi
 
@@ -179,16 +189,19 @@ jobs:
                  [ "${DEPLOY_ENV}" = "prod" ]; then
 
                 if [ -z "${UAT_VERSION}" ]; then
+
                   VALIDATION="INVALID"
                   FAILURE_REASON="PROD deployment blocked because no successful UAT version is recorded."
 
                 elif [ "${INPUT_VERSION}" != "${UAT_VERSION}" ]; then
+
                   VALIDATION="INVALID"
                   FAILURE_REASON="PROD deployment blocked because version ${INPUT_VERSION} has not successfully passed UAT. Latest successful UAT version is ${UAT_VERSION}."
                 fi
               fi
 
             elif [ "${VALIDATION}" = "VALID" ]; then
+
               VALIDATION="INVALID"
               FAILURE_REASON="Invalid version format."
             fi
@@ -206,6 +219,7 @@ jobs:
 
       - name: Deployment validation summary
         if: always()
+
         env:
           ACTION: ${{ inputs.action }}
           REQUESTED_VERSION: ${{ inputs.version }}
@@ -217,12 +231,14 @@ jobs:
           UAT_VERSION: ${{ steps.validate.outputs.uat_version }}
           CURRENT_PROD: ${{ steps.validate.outputs.current_prod_version }}
           PREVIOUS_PROD: ${{ steps.validate.outputs.previous_prod_version }}
+
         run: |
           echo "# Deployment Request Validation" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
 
           echo "| Item | Value |" >> "$GITHUB_STEP_SUMMARY"
           echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+
           echo "| Action | \`${ACTION}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Environment | \`${DEPLOY_ENV}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Requested Version | \`${REQUESTED_VERSION:-None}\` |" >> "$GITHUB_STEP_SUMMARY"
@@ -236,18 +252,18 @@ jobs:
 
           if [ "${VALIDATION}" = "VALID" ]; then
 
+            echo "## VALID" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+
             if [ "${DEPLOY_ENV}" = "prod" ]; then
-              echo "## Production Deployment Plan" >> "$GITHUB_STEP_SUMMARY"
-              echo "" >> "$GITHUB_STEP_SUMMARY"
 
               if [ "${ACTION}" = "rollback" ]; then
                 echo "Production rollback target: \`${EFFECTIVE_VERSION}\`" >> "$GITHUB_STEP_SUMMARY"
               else
-                echo "The exact UAT-tested release \`${EFFECTIVE_VERSION}\` will be promoted to production." >> "$GITHUB_STEP_SUMMARY"
+                echo "The exact UAT-tested release \`${EFFECTIVE_VERSION}\` is approved for PROD promotion." >> "$GITHUB_STEP_SUMMARY"
               fi
+
             else
-              echo "## VALID" >> "$GITHUB_STEP_SUMMARY"
-              echo "" >> "$GITHUB_STEP_SUMMARY"
               echo "Deployment request passed validation." >> "$GITHUB_STEP_SUMMARY"
             fi
 
@@ -255,6 +271,7 @@ jobs:
 
             echo "## Failure Reason" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
+
             echo "${FAILURE_REASON:-Deployment request validation failed.}" >> "$GITHUB_STEP_SUMMARY"
 
             if [ "${DEPLOY_ENV}" = "prod" ] && \
@@ -263,6 +280,7 @@ jobs:
               echo "" >> "$GITHUB_STEP_SUMMARY"
               echo "## Required Promotion Flow" >> "$GITHUB_STEP_SUMMARY"
               echo "" >> "$GITHUB_STEP_SUMMARY"
+
               echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
               echo "DEV → UAT → PROD" >> "$GITHUB_STEP_SUMMARY"
               echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
@@ -271,8 +289,10 @@ jobs:
 
       - name: Fail invalid deployment request
         if: ${{ steps.validate.outputs.validation != 'VALID' }}
+
         env:
           FAILURE_REASON: ${{ steps.validate.outputs.failure_reason }}
+
         run: |
           echo "Deployment validation failed."
           echo "${FAILURE_REASON}"

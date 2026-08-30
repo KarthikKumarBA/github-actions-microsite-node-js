@@ -26,9 +26,14 @@ permissions:
   pages: write
   id-token: write
 
+concurrency:
+  group: pages-deployment
+  cancel-in-progress: false
+
 jobs:
   deploy:
     name: Deploy ${{ inputs.environment }}
+
     runs-on: ubuntu-latest
 
     environment:
@@ -53,10 +58,12 @@ jobs:
 
       - name: Download published release artifact
         if: ${{ inputs.artifact_source == 'release' }}
+
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
           REPOSITORY: ${{ github.repository }}
+
         run: |
           gh release download "v${VERSION}" \
             --repo "${REPOSITORY}" \
@@ -64,10 +71,12 @@ jobs:
 
       - name: Download PR snapshot artifact
         if: ${{ inputs.artifact_source == 'snapshot' }}
+
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
           REPOSITORY: ${{ github.repository }}
+
         run: |
           ARTIFACT_NAME="microsite-${VERSION}"
 
@@ -101,6 +110,7 @@ jobs:
       - name: Verify artifact
         env:
           VERSION: ${{ inputs.version }}
+
         run: |
           test -f "microsite-${VERSION}.zip"
           echo "Artifact verified: microsite-${VERSION}.zip"
@@ -108,6 +118,7 @@ jobs:
       - name: Extract artifact
         env:
           VERSION: ${{ inputs.version }}
+
         run: |
           rm -rf release
           mkdir -p release
@@ -121,15 +132,15 @@ jobs:
       - name: Restore existing Pages state
         env:
           GITHUB_TOKEN: ${{ github.token }}
+
         run: |
           rm -rf site
           mkdir -p site
+          rm -rf pages-existing
 
           if git ls-remote \
             "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
             refs/heads/pages-state | grep -q pages-state; then
-
-            rm -rf pages-existing
 
             git clone \
               --single-branch \
@@ -145,10 +156,12 @@ jobs:
         run: |
           rm -rf site-before-deploy
           mkdir -p site-before-deploy
+
           cp -R site/. site-before-deploy/
 
       - name: Read deployment state
         id: state
+
         run: |
           STATE_FILE="site/.deployment-state/deployment-state.json"
 
@@ -169,6 +182,7 @@ jobs:
       - name: Prepare environment content
         env:
           DEPLOY_ENV: ${{ inputs.environment }}
+
         run: |
           if [ "${DEPLOY_ENV}" = "prod" ]; then
 
@@ -185,12 +199,12 @@ jobs:
             mkdir -p "site/${DEPLOY_ENV}"
 
             cp -R release/. "site/${DEPLOY_ENV}/"
-
           fi
 
       - name: Verify Pages content
         env:
           DEPLOY_ENV: ${{ inputs.environment }}
+
         run: |
           if [ "${DEPLOY_ENV}" = "prod" ]; then
             test -f site/index.html
@@ -209,15 +223,19 @@ jobs:
 
       - name: Deploy GitHub Pages
         id: deployment
+
         uses: actions/deploy-pages@v5
+
         with:
           artifact_name: github-pages
 
       - name: Calculate deployment URL
         id: urls
+
         env:
           PAGE_URL: ${{ steps.deployment.outputs.page_url }}
           DEPLOY_ENV: ${{ inputs.environment }}
+
         run: |
           BASE_URL="${PAGE_URL%/}"
 
@@ -232,9 +250,12 @@ jobs:
 
       - name: Wait for GitHub Pages
         id: health
+
         continue-on-error: true
+
         env:
           DEPLOY_URL: ${{ steps.urls.outputs.deploy_url }}
+
         run: |
           for i in {1..12}; do
 
@@ -258,18 +279,24 @@ jobs:
 
       - name: Run Playwright post-deployment test
         id: playwright
+
         if: ${{ steps.health.outcome == 'success' }}
+
         continue-on-error: true
+
         env:
           DEPLOY_URL: ${{ steps.urls.outputs.deploy_url }}
           DEPLOY_ENV: ${{ inputs.environment }}
           PLAYWRIGHT_HTML_OPEN: never
+
         run: |
           npx playwright test --reporter=html
 
       - name: Upload Playwright test report
         if: always()
+
         uses: actions/upload-artifact@v7
+
         with:
           name: playwright-report-${{ inputs.environment }}-${{ inputs.version }}
           path: playwright-report
@@ -278,9 +305,11 @@ jobs:
 
       - name: Determine validation result
         id: validation
+
         env:
           HEALTH_RESULT: ${{ steps.health.outcome }}
           PLAYWRIGHT_RESULT: ${{ steps.playwright.outcome }}
+
         run: |
           if [ "${HEALTH_RESULT}" = "success" ] && \
              [ "${PLAYWRIGHT_RESULT}" = "success" ]; then
@@ -294,6 +323,7 @@ jobs:
 
       - name: Restore previous PROD content
         if: ${{ inputs.environment == 'prod' && steps.validation.outputs.valid == 'false' }}
+
         run: |
           echo "Production validation failed."
           echo "Restoring previous known-good production content."
@@ -307,22 +337,29 @@ jobs:
 
       - name: Upload rollback Pages artifact
         if: ${{ inputs.environment == 'prod' && steps.validation.outputs.valid == 'false' }}
+
         uses: actions/upload-pages-artifact@v5
+
         with:
           name: github-pages-rollback
           path: site
 
       - name: Deploy automatic rollback
         id: rollback
+
         if: ${{ inputs.environment == 'prod' && steps.validation.outputs.valid == 'false' }}
+
         uses: actions/deploy-pages@v5
+
         with:
           artifact_name: github-pages-rollback
 
       - name: Verify automatic rollback
         if: ${{ inputs.environment == 'prod' && steps.validation.outputs.valid == 'false' }}
+
         env:
           DEPLOY_URL: ${{ steps.urls.outputs.deploy_url }}
+
         run: |
           for i in {1..12}; do
 
@@ -348,10 +385,13 @@ jobs:
 
       - name: Update deployment state
         if: ${{ steps.validation.outputs.valid == 'true' }}
+
         env:
           VERSION: ${{ inputs.version }}
           DEPLOY_ENV: ${{ inputs.environment }}
+          DEPLOY_ACTION: ${{ inputs.deployment_action }}
           CURRENT_PROD: ${{ steps.state.outputs.current_prod }}
+
         run: |
           STATE_DIR="site/.deployment-state"
           STATE_FILE="${STATE_DIR}/deployment-state.json"
@@ -365,10 +405,23 @@ jobs:
             "uat_deployed_at": "",
             "prod_current_version": "",
             "prod_previous_version": "",
-            "prod_deployed_at": ""
+            "prod_deployed_at": "",
+            "prod_history": []
           }
           EOF
           fi
+
+          # Migrate older state files that do not yet contain prod_history.
+          jq '
+            .uat_version = (.uat_version // "")
+            | .uat_deployed_at = (.uat_deployed_at // "")
+            | .prod_current_version = (.prod_current_version // "")
+            | .prod_previous_version = (.prod_previous_version // "")
+            | .prod_deployed_at = (.prod_deployed_at // "")
+            | .prod_history = (.prod_history // [])
+          ' "${STATE_FILE}" > "${STATE_FILE}.tmp"
+
+          mv "${STATE_FILE}.tmp" "${STATE_FILE}"
 
           DEPLOYED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
@@ -389,59 +442,111 @@ jobs:
           if [ "${DEPLOY_ENV}" = "prod" ]; then
 
             jq \
-              --arg current "${VERSION}" \
+              --arg version "${VERSION}" \
               --arg previous "${CURRENT_PROD}" \
               --arg deployed_at "${DEPLOYED_AT}" \
+              --arg action "${DEPLOY_ACTION}" \
+              --arg actor "${GITHUB_ACTOR}" \
+              --arg run_id "${GITHUB_RUN_ID}" \
               '
-              .prod_current_version = $current
+              .prod_current_version = $version
               | .prod_previous_version = $previous
               | .prod_deployed_at = $deployed_at
+              | .prod_history = (
+                  [{
+                    "version": $version,
+                    "deployed_at": $deployed_at,
+                    "action": $action,
+                    "actor": $actor,
+                    "run_id": $run_id
+                  }] + (.prod_history // [])
+                )
               ' \
               "${STATE_FILE}" > "${STATE_FILE}.tmp"
 
             mv "${STATE_FILE}.tmp" "${STATE_FILE}"
           fi
 
+          echo "Updated deployment state:"
           cat "${STATE_FILE}"
 
       - name: Save Pages state
         if: ${{ steps.validation.outputs.valid == 'true' }}
+
         env:
           GITHUB_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
           DEPLOY_ENV: ${{ inputs.environment }}
+
         run: |
           rm -rf pages-state-work
-          mkdir -p pages-state-work
 
-          cp -R site/. pages-state-work/
+          if git ls-remote \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            refs/heads/pages-state | grep -q pages-state; then
+
+            git clone \
+              --single-branch \
+              --branch pages-state \
+              "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+              pages-state-work
+
+            rsync \
+              -a \
+              --delete \
+              --exclude=".git" \
+              site/ \
+              pages-state-work/
+
+          else
+
+            mkdir -p pages-state-work
+
+            rsync \
+              -a \
+              --delete \
+              site/ \
+              pages-state-work/
+
+            cd pages-state-work
+
+            git init
+            git checkout -b pages-state
+
+            git remote add origin \
+              "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+            cd ..
+          fi
 
           cd pages-state-work
-
-          git init
-          git checkout -b pages-state
 
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-          git add .
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "No Pages state changes to save."
+            exit 0
+          fi
+
           git commit -m "deploy ${VERSION} to ${DEPLOY_ENV}"
 
-          git remote add origin \
-            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-
-          git push \
-            --force \
-            origin pages-state
+          git push origin pages-state
 
       - name: Get PROD approval details
         id: approval
+
         if: ${{ inputs.environment == 'prod' }}
+
         continue-on-error: true
+
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
+
         run: |
           APPROVED_BY=$(gh api \
             "repos/${REPOSITORY}/actions/runs/${RUN_ID}/approvals" \
@@ -462,10 +567,10 @@ jobs:
           fi
 
           echo "approved_by=${APPROVED_BY}" >> "$GITHUB_OUTPUT"
-          echo "Approved by: ${APPROVED_BY}"
 
       - name: Deployment Summary
         if: always()
+
         env:
           VERSION: ${{ inputs.version }}
           DEPLOY_ENV: ${{ inputs.environment }}
@@ -478,6 +583,7 @@ jobs:
           CURRENT_PROD: ${{ steps.state.outputs.current_prod }}
           ROLLBACK: ${{ steps.rollback.outcome }}
           APPROVED_BY: ${{ steps.approval.outputs.approved_by }}
+
         run: |
           STATUS="INVALID"
           HEALTH_STATUS="FAIL"
@@ -539,6 +645,7 @@ jobs:
 
       - name: Fail deployment after validation failure
         if: ${{ steps.validation.outputs.valid == 'false' }}
+
         run: |
           echo "Deployment validation failed."
 
