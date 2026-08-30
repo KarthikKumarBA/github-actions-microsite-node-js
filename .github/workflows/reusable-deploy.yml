@@ -11,7 +11,12 @@ on:
         required: true
         type: string
 
+      artifact_source:
+        required: true
+        type: string
+
 permissions:
+  actions: read
   contents: write
   pages: write
   id-token: write
@@ -41,7 +46,8 @@ jobs:
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
 
-      - name: Download release artifact
+      - name: Download published release artifact
+        if: ${{ inputs.artifact_source == 'release' }}
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
@@ -51,21 +57,55 @@ jobs:
             --repo "${REPOSITORY}" \
             --pattern "microsite-${VERSION}.zip"
 
+      - name: Download PR snapshot artifact
+        if: ${{ inputs.artifact_source == 'snapshot' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          ARTIFACT_NAME="microsite-${VERSION}"
+
+          ARTIFACT_ID=$(gh api \
+            "repos/${REPOSITORY}/actions/artifacts?name=${ARTIFACT_NAME}" \
+            --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | reverse | .[0].id // empty')
+
+          if [ -z "${ARTIFACT_ID}" ]; then
+            echo "Snapshot artifact not found: ${ARTIFACT_NAME}"
+            exit 1
+          fi
+
+          mkdir -p snapshot-download
+
+          gh api \
+            "repos/${REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" \
+            > snapshot-download/artifact.zip
+
+          unzip \
+            snapshot-download/artifact.zip \
+            -d snapshot-download/content
+
+          cp \
+            "snapshot-download/content/microsite-${VERSION}.zip" \
+            "microsite-${VERSION}.zip"
+
       - name: Verify downloaded artifact
         env:
           VERSION: ${{ inputs.version }}
         run: |
           test -f "microsite-${VERSION}.zip"
-          echo "Release artifact verified"
+          echo "Artifact verified: microsite-${VERSION}.zip"
 
-      - name: Extract release
+      - name: Extract artifact
         env:
           VERSION: ${{ inputs.version }}
         run: |
           rm -rf release
           mkdir -p release
 
-          unzip "microsite-${VERSION}.zip" -d release
+          unzip \
+            "microsite-${VERSION}.zip" \
+            -d release
 
           test -f release/index.html
 
@@ -90,9 +130,6 @@ jobs:
 
             cp -R pages-existing/. site/
             rm -rf site/.git
-
-          else
-            echo "pages-state branch does not exist yet"
           fi
 
       - name: Prepare environment content
@@ -126,8 +163,6 @@ jobs:
           else
             test -f "site/${DEPLOY_ENV}/index.html"
           fi
-
-          echo "Pages content verified"
 
       - name: Save Pages state
         env:
@@ -191,8 +226,6 @@ jobs:
         env:
           DEPLOY_URL: ${{ steps.urls.outputs.deploy_url }}
         run: |
-          echo "Waiting for ${DEPLOY_URL}"
-
           for i in {1..12}; do
 
             STATUS=$(curl \
@@ -205,14 +238,12 @@ jobs:
             echo "Attempt ${i}: HTTP ${STATUS}"
 
             if [ "${STATUS}" = "200" ]; then
-              echo "GitHub Pages is ready"
               exit 0
             fi
 
             sleep 10
           done
 
-          echo "GitHub Pages did not become ready"
           exit 1
 
       - name: Run Playwright post-deployment test
@@ -226,6 +257,7 @@ jobs:
         env:
           VERSION: ${{ inputs.version }}
           DEPLOY_ENV: ${{ inputs.environment }}
+          ARTIFACT_SOURCE: ${{ inputs.artifact_source }}
           DEPLOY_URL: ${{ steps.urls.outputs.deploy_url }}
           PLAYWRIGHT_RESULT: ${{ steps.playwright.outcome }}
           JOB_STATUS: ${{ job.status }}
@@ -241,15 +273,16 @@ jobs:
 
           echo "| Item | Value |" >> "$GITHUB_STEP_SUMMARY"
           echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
-
           echo "| Version | \`${VERSION}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Environment | \`${DEPLOY_ENV}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Source | \`${ARTIFACT_SOURCE}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Artifact | \`microsite-${VERSION}.zip\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Playwright | ${PLAYWRIGHT_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Validation | **${VALIDATION}** |" >> "$GITHUB_STEP_SUMMARY"
 
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "## Live URL" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-
-          echo "${DEPLOY_URL}" >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "${DEPLOY_URL}" ]; then
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "## Live URL" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "${DEPLOY_URL}" >> "$GITHUB_STEP_SUMMARY"
+          fi
