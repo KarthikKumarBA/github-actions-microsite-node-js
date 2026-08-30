@@ -1,35 +1,43 @@
-name: Reusable Deployment Validation
+name: Reusable Deploy Validation
 
 on:
   workflow_call:
     inputs:
       action:
+        description: "Deployment action: deploy or rollback"
         required: true
         type: string
 
       version:
+        description: "Version to deploy or rollback to"
         required: false
         type: string
 
       environment:
+        description: "Target environment: dev, uat or prod"
         required: true
         type: string
 
     outputs:
       effective_version:
+        description: "Resolved deployment version"
         value: ${{ jobs.validate.outputs.effective_version }}
 
       artifact_source:
+        description: "Artifact source: release or artifact"
         value: ${{ jobs.validate.outputs.artifact_source }}
 
       uat_version:
+        description: "Latest successful UAT version"
         value: ${{ jobs.validate.outputs.uat_version }}
 
-      current_prod_version:
-        value: ${{ jobs.validate.outputs.current_prod_version }}
+      prod_current_version:
+        description: "Current successful PROD version"
+        value: ${{ jobs.validate.outputs.prod_current_version }}
 
-      previous_prod_version:
-        value: ${{ jobs.validate.outputs.previous_prod_version }}
+      prod_previous_version:
+        description: "Previous successful PROD version"
+        value: ${{ jobs.validate.outputs.prod_previous_version }}
 
 permissions:
   actions: read
@@ -38,178 +46,333 @@ permissions:
 jobs:
   validate:
     name: Validate Deployment Request
-
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     outputs:
       effective_version: ${{ steps.validate.outputs.effective_version }}
       artifact_source: ${{ steps.validate.outputs.artifact_source }}
       uat_version: ${{ steps.validate.outputs.uat_version }}
-      current_prod_version: ${{ steps.validate.outputs.current_prod_version }}
-      previous_prod_version: ${{ steps.validate.outputs.previous_prod_version }}
+      prod_current_version: ${{ steps.validate.outputs.prod_current_version }}
+      prod_previous_version: ${{ steps.validate.outputs.prod_previous_version }}
 
     steps:
       - name: Read deployment state
+        id: state
         env:
           GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
         run: |
-          rm -rf deployment-state-repo
+          set -euo pipefail
 
-          if git ls-remote \
-            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
-            refs/heads/pages-state | grep -q pages-state; then
+          STATE_FILE="deployment-state.json"
 
-            git clone \
-              --depth 1 \
-              --single-branch \
-              --branch pages-state \
-              "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
-              deployment-state-repo
+          echo '{}' > "${STATE_FILE}"
+
+          if gh api \
+            "repos/${REPOSITORY}/contents/.deployment-state/deployment-state.json?ref=pages-state" \
+            > state-response.json 2>/dev/null; then
+
+            jq -r '.content' state-response.json \
+              | tr -d '\n' \
+              | base64 --decode \
+              > "${STATE_FILE}"
+
+            echo "Deployment state loaded from pages-state."
+          else
+            echo "pages-state deployment state does not exist yet."
+            echo "Using empty deployment state."
           fi
+
+          UAT_VERSION="$(jq -r '.uat_version // ""' "${STATE_FILE}")"
+          PROD_CURRENT_VERSION="$(jq -r '.prod_current_version // ""' "${STATE_FILE}")"
+          PROD_PREVIOUS_VERSION="$(jq -r '.prod_previous_version // ""' "${STATE_FILE}")"
+
+          echo "uat_version=${UAT_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "prod_current_version=${PROD_CURRENT_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "prod_previous_version=${PROD_PREVIOUS_VERSION}" >> "$GITHUB_OUTPUT"
+
+          echo "Current deployment state:"
+          jq '.' "${STATE_FILE}"
 
       - name: Validate deployment request
         id: validate
-
         env:
-          INPUT_VERSION: ${{ inputs.version }}
-          DEPLOY_ENV: ${{ inputs.environment }}
-          DEPLOY_ACTION: ${{ inputs.action }}
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
 
+          INPUT_ACTION: ${{ inputs.action }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_ENVIRONMENT: ${{ inputs.environment }}
+
+          UAT_VERSION: ${{ steps.state.outputs.uat_version }}
+          PROD_CURRENT_VERSION: ${{ steps.state.outputs.prod_current_version }}
+          PROD_PREVIOUS_VERSION: ${{ steps.state.outputs.prod_previous_version }}
         run: |
-          RELEASE_PATTERN='^[0-9]+\.[0-9]+\.[0-9]+$'
-          SNAPSHOT_PATTERN='^[0-9]+\.[0-9]+\.[0-9]+-SNAPSHOT-pr-[0-9]+$'
+          set -euo pipefail
 
-          STATE_FILE="deployment-state-repo/.deployment-state/deployment-state.json"
+          ACTION="$(echo "${INPUT_ACTION}" | tr '[:upper:]' '[:lower:]')"
+          ENVIRONMENT="$(echo "${INPUT_ENVIRONMENT}" | tr '[:upper:]' '[:lower:]')"
+          REQUESTED_VERSION="$(echo "${INPUT_VERSION}" | xargs)"
 
-          UAT_VERSION=""
-          CURRENT_PROD_VERSION=""
-          PREVIOUS_PROD_VERSION=""
-
+          EFFECTIVE_VERSION=""
+          ARTIFACT_SOURCE=""
           VALIDATION="VALID"
           FAILURE_REASON=""
-          ARTIFACT_SOURCE=""
-          EFFECTIVE_VERSION="${INPUT_VERSION}"
 
-          if [ -f "${STATE_FILE}" ]; then
-            UAT_VERSION=$(jq -r '.uat_version // ""' "${STATE_FILE}")
-            CURRENT_PROD_VERSION=$(jq -r '.prod_current_version // ""' "${STATE_FILE}")
-            PREVIOUS_PROD_VERSION=$(jq -r '.prod_previous_version // ""' "${STATE_FILE}")
+          RELEASE_REGEX='^[0-9]+\.[0-9]+\.[0-9]+$'
+          SNAPSHOT_REGEX='^[0-9]+\.[0-9]+\.[0-9]+-SNAPSHOT-pr-[0-9]+$'
+
+          fail_validation() {
+            VALIDATION="INVALID"
+            FAILURE_REASON="$1"
+          }
+
+          release_exists() {
+            local VERSION="$1"
+
+            gh release view "v${VERSION}" \
+              --repo "${REPOSITORY}" \
+              >/dev/null 2>&1
+          }
+
+          prod_history_contains() {
+            local VERSION="$1"
+
+            jq -e \
+              --arg version "${VERSION}" \
+              '
+                (.prod_history // [])
+                | any(.version == $version)
+              ' \
+              deployment-state.json \
+              >/dev/null 2>&1
+          }
+
+          snapshot_artifact_exists() {
+            local VERSION="$1"
+            local ARTIFACT_NAME="microsite-${VERSION}"
+
+            gh api \
+              --paginate \
+              "repos/${REPOSITORY}/actions/artifacts?per_page=100" \
+              > artifacts.json
+
+            jq -e \
+              --arg artifact_name "${ARTIFACT_NAME}" \
+              '
+                .artifacts
+                | any(
+                    .name == $artifact_name
+                    and .expired == false
+                  )
+              ' \
+              artifacts.json \
+              >/dev/null 2>&1
+          }
+
+          echo "Deployment request:"
+          echo "Action:      ${ACTION}"
+          echo "Environment: ${ENVIRONMENT}"
+          echo "Version:     ${REQUESTED_VERSION:-<blank>}"
+
+          #
+          # Validate action
+          #
+
+          if [[ "${ACTION}" != "deploy" && "${ACTION}" != "rollback" ]]; then
+            fail_validation "Unsupported deployment action: ${ACTION}"
           fi
 
-          echo "uat_version=${UAT_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "current_prod_version=${CURRENT_PROD_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "previous_prod_version=${PREVIOUS_PROD_VERSION}" >> "$GITHUB_OUTPUT"
+          #
+          # Validate environment
+          #
 
-          if [ "${DEPLOY_ACTION}" = "rollback" ]; then
+          if [[ "${VALIDATION}" == "VALID" ]]; then
+            if [[ "${ENVIRONMENT}" != "dev" &&
+                  "${ENVIRONMENT}" != "uat" &&
+                  "${ENVIRONMENT}" != "prod" ]]; then
+              fail_validation "Unsupported environment: ${ENVIRONMENT}"
+            fi
+          fi
 
-            if [ "${DEPLOY_ENV}" != "prod" ]; then
-              VALIDATION="INVALID"
-              FAILURE_REASON="Rollback is supported only for PROD."
+          #
+          # ============================================================
+          # ROLLBACK
+          # ============================================================
+          #
+
+          if [[ "${VALIDATION}" == "VALID" && "${ACTION}" == "rollback" ]]; then
+
+            #
+            # Rollback is PROD only.
+            #
+
+            if [[ "${ENVIRONMENT}" != "prod" ]]; then
+              fail_validation "Rollback is allowed only for PROD."
             fi
 
-            if [ "${VALIDATION}" = "VALID" ] && \
-               [ -z "${PREVIOUS_PROD_VERSION}" ]; then
+            #
+            # Blank rollback version = immediate previous successful PROD.
+            #
 
-              VALIDATION="INVALID"
-              FAILURE_REASON="No previous successful PROD version is recorded."
-            fi
+            if [[ "${VALIDATION}" == "VALID" ]]; then
+              if [[ -z "${REQUESTED_VERSION}" ]]; then
 
-            if [ "${VALIDATION}" = "VALID" ]; then
+                if [[ -z "${PROD_PREVIOUS_VERSION}" ]]; then
+                  fail_validation "No previous PROD version is available for rollback."
+                else
+                  EFFECTIVE_VERSION="${PROD_PREVIOUS_VERSION}"
 
-              if ! gh release view "v${PREVIOUS_PROD_VERSION}" \
-                --repo "${REPOSITORY}" \
-                >/dev/null 2>&1; then
+                  echo "No rollback version supplied."
+                  echo "Using previous PROD version: ${EFFECTIVE_VERSION}"
+                fi
 
-                VALIDATION="INVALID"
-                FAILURE_REASON="Rollback release v${PREVIOUS_PROD_VERSION} does not exist."
+              else
+                EFFECTIVE_VERSION="${REQUESTED_VERSION}"
               fi
             fi
 
-            if [ "${VALIDATION}" = "VALID" ]; then
-              EFFECTIVE_VERSION="${PREVIOUS_PROD_VERSION}"
+            #
+            # Rollback version must be a normal immutable release version.
+            #
+
+            if [[ "${VALIDATION}" == "VALID" ]]; then
+              if [[ ! "${EFFECTIVE_VERSION}" =~ ${RELEASE_REGEX} ]]; then
+                fail_validation "Rollback version must be an official release version."
+              fi
+            fi
+
+            #
+            # Do not rollback to the version already running in PROD.
+            #
+
+            if [[ "${VALIDATION}" == "VALID" ]]; then
+              if [[ -n "${PROD_CURRENT_VERSION}" &&
+                    "${EFFECTIVE_VERSION}" == "${PROD_CURRENT_VERSION}" ]]; then
+                fail_validation "Rollback target ${EFFECTIVE_VERSION} is already the current PROD version."
+              fi
+            fi
+
+            #
+            # ENTERPRISE ROLLBACK RULE:
+            #
+            # The requested rollback version must have previously
+            # been successfully deployed to PROD.
+            #
+            # IMPORTANT:
+            # We intentionally DO NOT compare rollback version
+            # with latest UAT version.
+            #
+
+            if [[ "${VALIDATION}" == "VALID" ]]; then
+              if ! prod_history_contains "${EFFECTIVE_VERSION}"; then
+                fail_validation "Rollback target ${EFFECTIVE_VERSION} was not found in successful PROD deployment history."
+              fi
+            fi
+
+            #
+            # Immutable GitHub Release must still exist.
+            #
+
+            if [[ "${VALIDATION}" == "VALID" ]]; then
+              if ! release_exists "${EFFECTIVE_VERSION}"; then
+                fail_validation "GitHub Release v${EFFECTIVE_VERSION} does not exist."
+              fi
+            fi
+
+            if [[ "${VALIDATION}" == "VALID" ]]; then
               ARTIFACT_SOURCE="release"
             fi
+          fi
 
-          else
+          #
+          # ============================================================
+          # NORMAL DEPLOYMENT
+          # ============================================================
+          #
 
-            if [ -z "${INPUT_VERSION}" ]; then
-              VALIDATION="INVALID"
-              FAILURE_REASON="Version is required for deployment."
+          if [[ "${VALIDATION}" == "VALID" && "${ACTION}" == "deploy" ]]; then
+
+            if [[ -z "${REQUESTED_VERSION}" ]]; then
+              fail_validation "Version is required for deployment."
+            else
+              EFFECTIVE_VERSION="${REQUESTED_VERSION}"
             fi
 
-            if [ "${VALIDATION}" = "VALID" ] && \
-               [[ "${INPUT_VERSION}" =~ ${SNAPSHOT_PATTERN} ]]; then
+            #
+            # Snapshot deployment
+            #
 
-              if [ "${DEPLOY_ENV}" != "dev" ]; then
+            if [[ "${VALIDATION}" == "VALID" &&
+                  "${EFFECTIVE_VERSION}" =~ ${SNAPSHOT_REGEX} ]]; then
 
-                VALIDATION="INVALID"
-                FAILURE_REASON="PR SNAPSHOT versions can only be deployed to DEV."
+              if [[ "${ENVIRONMENT}" != "dev" ]]; then
+                fail_validation "SNAPSHOT versions can only be deployed to DEV."
+              fi
 
-              else
-
-                ARTIFACT_NAME="microsite-${INPUT_VERSION}"
-
-                ARTIFACT_ID=$(gh api \
-                  "repos/${REPOSITORY}/actions/artifacts?name=${ARTIFACT_NAME}" \
-                  --jq '.artifacts
-                        | map(select(.expired == false))
-                        | sort_by(.created_at)
-                        | reverse
-                        | .[0].id // empty')
-
-                if [ -z "${ARTIFACT_ID}" ]; then
-
-                  VALIDATION="INVALID"
-                  FAILURE_REASON="Snapshot artifact ${ARTIFACT_NAME} was not found or has expired."
-
-                else
-
-                  ARTIFACT_SOURCE="snapshot"
+              if [[ "${VALIDATION}" == "VALID" ]]; then
+                if ! snapshot_artifact_exists "${EFFECTIVE_VERSION}"; then
+                  fail_validation "Snapshot artifact microsite-${EFFECTIVE_VERSION} does not exist or has expired."
                 fi
               fi
 
-            elif [ "${VALIDATION}" = "VALID" ] && \
-                 [[ "${INPUT_VERSION}" =~ ${RELEASE_PATTERN} ]]; then
+              if [[ "${VALIDATION}" == "VALID" ]]; then
+                ARTIFACT_SOURCE="artifact"
+              fi
+            fi
 
-              if ! gh release view "v${INPUT_VERSION}" \
-                --repo "${REPOSITORY}" \
-                >/dev/null 2>&1; then
+            #
+            # Official release deployment
+            #
 
-                VALIDATION="INVALID"
-                FAILURE_REASON="GitHub Release v${INPUT_VERSION} does not exist."
+            if [[ "${VALIDATION}" == "VALID" &&
+                  "${EFFECTIVE_VERSION}" =~ ${RELEASE_REGEX} ]]; then
 
-              else
+              if ! release_exists "${EFFECTIVE_VERSION}"; then
+                fail_validation "GitHub Release v${EFFECTIVE_VERSION} does not exist."
+              fi
 
+              if [[ "${VALIDATION}" == "VALID" ]]; then
                 ARTIFACT_SOURCE="release"
               fi
 
-              if [ "${VALIDATION}" = "VALID" ] && \
-                 [ "${DEPLOY_ENV}" = "prod" ]; then
+              #
+              # NORMAL PROD PROMOTION RULE
+              #
+              # New PROD deployment MUST be the exact version
+              # that successfully passed UAT.
+              #
 
-                if [ -z "${UAT_VERSION}" ]; then
+              if [[ "${VALIDATION}" == "VALID" &&
+                    "${ENVIRONMENT}" == "prod" ]]; then
 
-                  VALIDATION="INVALID"
-                  FAILURE_REASON="PROD deployment blocked because no successful UAT version is recorded."
-
-                elif [ "${INPUT_VERSION}" != "${UAT_VERSION}" ]; then
-
-                  VALIDATION="INVALID"
-                  FAILURE_REASON="PROD deployment blocked because version ${INPUT_VERSION} has not successfully passed UAT. Latest successful UAT version is ${UAT_VERSION}."
+                if [[ -z "${UAT_VERSION}" ]]; then
+                  fail_validation "No successful UAT deployment is recorded."
+                elif [[ "${EFFECTIVE_VERSION}" != "${UAT_VERSION}" ]]; then
+                  fail_validation "PROD deployment blocked because version ${EFFECTIVE_VERSION} has not successfully passed UAT. Latest successful UAT version is ${UAT_VERSION}."
                 fi
               fi
+            fi
 
-            elif [ "${VALIDATION}" = "VALID" ]; then
+            #
+            # Reject invalid version format.
+            #
 
-              VALIDATION="INVALID"
-              FAILURE_REASON="Invalid version format."
+            if [[ "${VALIDATION}" == "VALID" &&
+                  ! "${EFFECTIVE_VERSION}" =~ ${RELEASE_REGEX} &&
+                  ! "${EFFECTIVE_VERSION}" =~ ${SNAPSHOT_REGEX} ]]; then
+
+              fail_validation "Invalid version format: ${EFFECTIVE_VERSION}"
             fi
           fi
 
-          echo "validation=${VALIDATION}" >> "$GITHUB_OUTPUT"
           echo "effective_version=${EFFECTIVE_VERSION}" >> "$GITHUB_OUTPUT"
           echo "artifact_source=${ARTIFACT_SOURCE}" >> "$GITHUB_OUTPUT"
+          echo "uat_version=${UAT_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "prod_current_version=${PROD_CURRENT_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "prod_previous_version=${PROD_PREVIOUS_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "validation=${VALIDATION}" >> "$GITHUB_OUTPUT"
 
           {
             echo "failure_reason<<EOF"
@@ -217,82 +380,63 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Deployment validation summary
+      - name: Deployment Validation Summary
         if: always()
-
         env:
           ACTION: ${{ inputs.action }}
+          ENVIRONMENT: ${{ inputs.environment }}
           REQUESTED_VERSION: ${{ inputs.version }}
-          DEPLOY_ENV: ${{ inputs.environment }}
-          VALIDATION: ${{ steps.validate.outputs.validation }}
-          FAILURE_REASON: ${{ steps.validate.outputs.failure_reason }}
           EFFECTIVE_VERSION: ${{ steps.validate.outputs.effective_version }}
           ARTIFACT_SOURCE: ${{ steps.validate.outputs.artifact_source }}
-          UAT_VERSION: ${{ steps.validate.outputs.uat_version }}
-          CURRENT_PROD: ${{ steps.validate.outputs.current_prod_version }}
-          PREVIOUS_PROD: ${{ steps.validate.outputs.previous_prod_version }}
-
+          UAT_VERSION: ${{ steps.state.outputs.uat_version }}
+          PROD_CURRENT_VERSION: ${{ steps.state.outputs.prod_current_version }}
+          PROD_PREVIOUS_VERSION: ${{ steps.state.outputs.prod_previous_version }}
+          VALIDATION: ${{ steps.validate.outputs.validation }}
+          FAILURE_REASON: ${{ steps.validate.outputs.failure_reason }}
         run: |
-          echo "# Deployment Request Validation" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## Deployment Validation"
+            echo ""
+            echo "| Item | Value |"
+            echo "|---|---|"
+            echo "| Action | ${ACTION} |"
+            echo "| Environment | ${ENVIRONMENT} |"
+            echo "| Requested Version | ${REQUESTED_VERSION:-Not supplied} |"
+            echo "| Effective Version | ${EFFECTIVE_VERSION:-Not resolved} |"
+            echo "| Artifact Source | ${ARTIFACT_SOURCE:-Not resolved} |"
+            echo "| Latest Successful UAT | ${UAT_VERSION:-None} |"
+            echo "| Current PROD | ${PROD_CURRENT_VERSION:-None} |"
+            echo "| Previous PROD | ${PROD_PREVIOUS_VERSION:-None} |"
+            echo "| Validation | **${VALIDATION:-INVALID}** |"
+            echo ""
 
-          echo "| Item | Value |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
-
-          echo "| Action | \`${ACTION}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Environment | \`${DEPLOY_ENV}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Requested Version | \`${REQUESTED_VERSION:-None}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Effective Version | \`${EFFECTIVE_VERSION:-None}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Latest Successful UAT | \`${UAT_VERSION:-None}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Current PROD | \`${CURRENT_PROD:-None}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Previous PROD | \`${PREVIOUS_PROD:-None}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Validation | **${VALIDATION:-INVALID}** |" >> "$GITHUB_STEP_SUMMARY"
-
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-
-          if [ "${VALIDATION}" = "VALID" ]; then
-
-            echo "## VALID" >> "$GITHUB_STEP_SUMMARY"
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-
-            if [ "${DEPLOY_ENV}" = "prod" ]; then
-
-              if [ "${ACTION}" = "rollback" ]; then
-                echo "Production rollback target: \`${EFFECTIVE_VERSION}\`" >> "$GITHUB_STEP_SUMMARY"
-              else
-                echo "The exact UAT-tested release \`${EFFECTIVE_VERSION}\` is approved for PROD promotion." >> "$GITHUB_STEP_SUMMARY"
-              fi
-
-            else
-              echo "Deployment request passed validation." >> "$GITHUB_STEP_SUMMARY"
+            if [[ "${VALIDATION}" == "INVALID" ]]; then
+              echo "### Failure Reason"
+              echo ""
+              echo "${FAILURE_REASON}"
+              echo ""
             fi
 
-          else
-
-            echo "## Failure Reason" >> "$GITHUB_STEP_SUMMARY"
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-
-            echo "${FAILURE_REASON:-Deployment request validation failed.}" >> "$GITHUB_STEP_SUMMARY"
-
-            if [ "${DEPLOY_ENV}" = "prod" ] && \
-               [ "${ACTION}" = "deploy" ]; then
-
-              echo "" >> "$GITHUB_STEP_SUMMARY"
-              echo "## Required Promotion Flow" >> "$GITHUB_STEP_SUMMARY"
-              echo "" >> "$GITHUB_STEP_SUMMARY"
-
-              echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
-              echo "DEV → UAT → PROD" >> "$GITHUB_STEP_SUMMARY"
-              echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
+            if [[ "${ACTION}" == "rollback" &&
+                  "${ENVIRONMENT}" == "prod" ]]; then
+              echo "### PROD Rollback Policy"
+              echo ""
+              echo "Rollback does not require the target version to match latest UAT."
+              echo ""
+              echo "The rollback target must:"
+              echo ""
+              echo "- Have previously been successfully deployed to PROD."
+              echo "- Exist in PROD deployment history."
+              echo "- Still exist as an immutable GitHub Release."
+              echo "- Be different from the currently deployed PROD version."
+              echo "- Pass PROD approval before deployment."
             fi
-          fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Fail invalid deployment request
         if: ${{ steps.validate.outputs.validation != 'VALID' }}
-
         env:
           FAILURE_REASON: ${{ steps.validate.outputs.failure_reason }}
-
         run: |
           echo "Deployment validation failed."
           echo "${FAILURE_REASON}"
