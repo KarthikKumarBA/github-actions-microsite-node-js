@@ -48,7 +48,6 @@ jobs:
           VERSION: 1.0.${{ github.run_number }}
         run: |
           test -f "microsite-${VERSION}.zip"
-          echo "Artifact verified"
 
       - name: Publish GitHub Release
         env:
@@ -65,7 +64,7 @@ jobs:
             --notes "Validated release ${VERSION}"
 
   summary:
-    name: Release Summary
+    name: Final Validation Summary
     needs:
       - ci
       - security
@@ -74,18 +73,94 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Generate Summary
+      - name: Generate final validation summary
         env:
           VERSION: 1.0.${{ github.run_number }}
+
           CI_RESULT: ${{ needs.ci.result }}
           SECURITY_RESULT: ${{ needs.security.result }}
           RELEASE_RESULT: ${{ needs.release.result }}
+
+          SONAR_GATE: ${{ needs.security.outputs.sonar-quality-gate }}
+          SONAR_BUGS: ${{ needs.security.outputs.sonar-bugs }}
+          SONAR_VULNERABILITIES: ${{ needs.security.outputs.sonar-vulnerabilities }}
+          SONAR_HOTSPOTS: ${{ needs.security.outputs.sonar-hotspots }}
+          SONAR_SMELLS: ${{ needs.security.outputs.sonar-code-smells }}
+          SONAR_COVERAGE: ${{ needs.security.outputs.sonar-coverage }}
+          SONAR_DUPLICATIONS: ${{ needs.security.outputs.sonar-duplications }}
+
+          TRIVY_CRITICAL: ${{ needs.security.outputs.trivy-critical }}
+          TRIVY_HIGH: ${{ needs.security.outputs.trivy-high }}
         run: |
-          echo "## Release Pipeline Summary" >> "$GITHUB_STEP_SUMMARY"
+          VALIDATION="VALID"
+
+          if [ "${CI_RESULT}" != "success" ] || \
+             [ "${SECURITY_RESULT}" != "success" ] || \
+             [ "${RELEASE_RESULT}" != "success" ]; then
+            VALIDATION="INVALID"
+          fi
+
+          echo "# Release Validation Summary" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Item | Result |" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "| Item | Value |" >> "$GITHUB_STEP_SUMMARY"
           echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
           echo "| Version | \`${VERSION}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| CI | ${CI_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Security | ${SECURITY_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Release | ${RELEASE_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Artifact | \`microsite-${VERSION}.zip\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Commit | \`${GITHUB_SHA}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Validation | **${VALIDATION}** |" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "## Build Validation" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "| Check | Result |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Lint | ${CI_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Unit Tests | ${CI_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Build | ${CI_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "## SonarQube" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "| Metric | Result |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---:|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Quality Gate | ${SONAR_GATE:-Unavailable} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Bugs | ${SONAR_BUGS:-0} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Vulnerabilities | ${SONAR_VULNERABILITIES:-0} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Security Hotspots | ${SONAR_HOTSPOTS:-0} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Code Smells | ${SONAR_SMELLS:-0} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Coverage | ${SONAR_COVERAGE:-0}% |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Duplications | ${SONAR_DUPLICATIONS:-0}% |" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "## Trivy" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "| Severity | Vulnerabilities |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---:|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Critical | ${TRIVY_CRITICAL:-0} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| High | ${TRIVY_HIGH:-0} |" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "## Release" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "| Check | Result |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| GitHub Release | ${RELEASE_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Release Version | \`v${VERSION}\` |" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "---" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "${VALIDATION}" = "VALID" ]; then
+            echo "## VALID" >> "$GITHUB_STEP_SUMMARY"
+            echo "Release artifact passed required validation." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## INVALID" >> "$GITHUB_STEP_SUMMARY"
+            echo "Release artifact did not pass required validation." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi

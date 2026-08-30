@@ -33,7 +33,7 @@ jobs:
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
   summary:
-    name: PR Quality Gate
+    name: Final PR Validation
     needs:
       - ci
       - security
@@ -41,21 +41,62 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: PR Summary
+      - name: Generate PR validation summary
         env:
           VERSION: 1.0.${{ github.run_number }}-SNAPSHOT-pr-${{ github.event.pull_request.number }}
+
           CI_RESULT: ${{ needs.ci.result }}
           SECURITY_RESULT: ${{ needs.security.result }}
+
+          SONAR_GATE: ${{ needs.security.outputs.sonar-quality-gate }}
+          SONAR_BUGS: ${{ needs.security.outputs.sonar-bugs }}
+          SONAR_VULNERABILITIES: ${{ needs.security.outputs.sonar-vulnerabilities }}
+          SONAR_HOTSPOTS: ${{ needs.security.outputs.sonar-hotspots }}
+          SONAR_COVERAGE: ${{ needs.security.outputs.sonar-coverage }}
+
+          TRIVY_CRITICAL: ${{ needs.security.outputs.trivy-critical }}
+          TRIVY_HIGH: ${{ needs.security.outputs.trivy-high }}
         run: |
-          echo "## PR Validation Summary" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Item | Result |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Version | \`${VERSION}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| CI | ${CI_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Security | ${SECURITY_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
+          VALIDATION="VALID"
 
           if [ "${CI_RESULT}" != "success" ] || \
              [ "${SECURITY_RESULT}" != "success" ]; then
+            VALIDATION="INVALID"
+          fi
+
+          echo "# PR Validation Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "| Item | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Version | \`${VERSION}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Commit | \`${GITHUB_SHA}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Validation | **${VALIDATION}** |" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "## SonarQube" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "| Metric | Result |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---:|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Quality Gate | ${SONAR_GATE:-Unavailable} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Bugs | ${SONAR_BUGS:-0} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Vulnerabilities | ${SONAR_VULNERABILITIES:-0} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Security Hotspots | ${SONAR_HOTSPOTS:-0} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Coverage | ${SONAR_COVERAGE:-0}% |" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "## Trivy" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "| Severity | Vulnerabilities |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---:|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Critical | ${TRIVY_CRITICAL:-0} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| High | ${TRIVY_HIGH:-0} |" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "${VALIDATION}" = "VALID" ]; then
+            echo "## VALID" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## INVALID" >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
