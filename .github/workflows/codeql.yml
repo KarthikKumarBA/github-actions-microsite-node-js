@@ -1,21 +1,17 @@
 name: CodeQL
 
 on:
-  pull_request:
+  push:
     branches:
       - main
 
-  push:
+  pull_request:
     branches:
       - main
 
 permissions:
   contents: read
   security-events: write
-
-concurrency:
-  group: codeql-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
 
 jobs:
   codeql:
@@ -31,64 +27,9 @@ jobs:
         uses: github/codeql-action/init@v4
         with:
           languages: javascript-typescript
+          queries: security-extended
 
-      - name: Analyze
-        id: analyze
+      - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
         with:
-          output: sarif-results
-
-      - name: Generate CodeQL validation summary
-        if: always()
-        env:
-          ANALYSIS_RESULT: ${{ steps.analyze.outcome }}
-        run: |
-          ERRORS=0
-          WARNINGS=0
-          NOTES=0
-          TOTAL=0
-
-          if [ -d sarif-results ]; then
-            ERRORS=$(find sarif-results -name "*.sarif" -type f -exec jq '[.runs[]?.results[]? | select(.level=="error")] | length' {} \; | awk '{s+=$1} END {print s+0}')
-            WARNINGS=$(find sarif-results -name "*.sarif" -type f -exec jq '[.runs[]?.results[]? | select(.level=="warning")] | length' {} \; | awk '{s+=$1} END {print s+0}')
-            NOTES=$(find sarif-results -name "*.sarif" -type f -exec jq '[.runs[]?.results[]? | select(.level=="note")] | length' {} \; | awk '{s+=$1} END {print s+0}')
-          fi
-
-          TOTAL=$((ERRORS + WARNINGS + NOTES))
-
-          VALIDATION="VALID"
-
-          if [ "${ANALYSIS_RESULT}" != "success" ]; then
-            VALIDATION="INVALID"
-          fi
-
-          echo "# CodeQL Validation Summary" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-
-          echo "| Item | Value |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Commit | \`${GITHUB_SHA}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Language | JavaScript / TypeScript |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Analysis | ${ANALYSIS_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Validation | **${VALIDATION}** |" >> "$GITHUB_STEP_SUMMARY"
-
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "## Findings" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-
-          echo "| Severity | Findings |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|---|---:|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Error | ${ERRORS} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Warning | ${WARNINGS} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Note | ${NOTES} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Total | ${TOTAL} |" >> "$GITHUB_STEP_SUMMARY"
-
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-
-          if [ "${VALIDATION}" = "VALID" ]; then
-            echo "## VALID" >> "$GITHUB_STEP_SUMMARY"
-            echo "CodeQL analysis completed successfully." >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "## INVALID" >> "$GITHUB_STEP_SUMMARY"
-            echo "CodeQL analysis did not complete successfully." >> "$GITHUB_STEP_SUMMARY"
-          fi
+          category: "/language:javascript-typescript"
