@@ -237,6 +237,7 @@ jobs:
           DEPLOY_URL: ${{ steps.urls.outputs.deploy_url }}
         run: |
           for i in {1..12}; do
+
             STATUS=$(curl \
               -L \
               -s \
@@ -283,8 +284,11 @@ jobs:
         run: |
           if [ "${HEALTH_RESULT}" = "success" ] && \
              [ "${PLAYWRIGHT_RESULT}" = "success" ]; then
+
             echo "valid=true" >> "$GITHUB_OUTPUT"
+
           else
+
             echo "valid=false" >> "$GITHUB_OUTPUT"
           fi
 
@@ -321,6 +325,7 @@ jobs:
           DEPLOY_URL: ${{ steps.urls.outputs.deploy_url }}
         run: |
           for i in {1..12}; do
+
             STATUS=$(curl \
               -L \
               -s \
@@ -368,6 +373,7 @@ jobs:
           DEPLOYED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
           if [ "${DEPLOY_ENV}" = "uat" ]; then
+
             jq \
               --arg version "${VERSION}" \
               --arg deployed_at "${DEPLOYED_AT}" \
@@ -381,6 +387,7 @@ jobs:
           fi
 
           if [ "${DEPLOY_ENV}" = "prod" ]; then
+
             jq \
               --arg current "${VERSION}" \
               --arg previous "${CURRENT_PROD}" \
@@ -427,7 +434,7 @@ jobs:
             --force \
             origin pages-state
 
-      - name: Get deployment approval details
+      - name: Get PROD approval details
         id: approval
         if: ${{ inputs.environment == 'prod' }}
         continue-on-error: true
@@ -438,7 +445,16 @@ jobs:
         run: |
           APPROVED_BY=$(gh api \
             "repos/${REPOSITORY}/actions/runs/${RUN_ID}/approvals" \
-            --jq '.[-1].user.login // "Unavailable"' \
+            --jq '
+              map(
+                select(
+                  .state == "approved"
+                  and any(.environments[]?; .name == "prod")
+                )
+              )
+              | last
+              | .user.login // "Unavailable"
+            ' \
             2>/dev/null || echo "Unavailable")
 
           if [ -z "${APPROVED_BY}" ]; then
@@ -487,6 +503,7 @@ jobs:
 
           echo "# Deployment Validation Summary" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
+
           echo "| Item | Value |" >> "$GITHUB_STEP_SUMMARY"
           echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
 
@@ -508,6 +525,7 @@ jobs:
 
           if [ "${DEPLOY_ENV}" = "prod" ] && \
              [ "${ROLLBACK}" = "success" ]; then
+
             echo "| Automatic Rollback | **SUCCESS** |" >> "$GITHUB_STEP_SUMMARY"
           fi
 
@@ -519,7 +537,7 @@ jobs:
             echo "${DEPLOY_URL}" >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      - name: Fail deployment after rollback
+      - name: Fail deployment after validation failure
         if: ${{ steps.validation.outputs.valid == 'false' }}
         run: |
           echo "Deployment validation failed."

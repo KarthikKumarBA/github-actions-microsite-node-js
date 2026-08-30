@@ -39,208 +39,11 @@ concurrency:
 jobs:
   validate:
     name: Validate Deployment
-    runs-on: ubuntu-latest
-
-    outputs:
-      artifact_source: ${{ steps.validate.outputs.artifact_source }}
-      effective_version: ${{ steps.validate.outputs.effective_version }}
-      uat_version: ${{ steps.validate.outputs.uat_version }}
-      current_prod_version: ${{ steps.validate.outputs.current_prod_version }}
-      previous_prod_version: ${{ steps.validate.outputs.previous_prod_version }}
-
-    steps:
-      - name: Read deployment state
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          rm -rf deployment-state-repo
-
-          if git ls-remote \
-            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
-            refs/heads/pages-state | grep -q pages-state; then
-
-            git clone \
-              --depth 1 \
-              --single-branch \
-              --branch pages-state \
-              "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
-              deployment-state-repo
-          fi
-
-      - name: Validate deployment request
-        id: validate
-        env:
-          INPUT_VERSION: ${{ inputs.version }}
-          DEPLOY_ENV: ${{ inputs.environment }}
-          DEPLOY_ACTION: ${{ inputs.action }}
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-        run: |
-          RELEASE_PATTERN='^[0-9]+\.[0-9]+\.[0-9]+$'
-          SNAPSHOT_PATTERN='^[0-9]+\.[0-9]+\.[0-9]+-SNAPSHOT-pr-[0-9]+$'
-
-          STATE_FILE="deployment-state-repo/.deployment-state/deployment-state.json"
-
-          UAT_VERSION=""
-          CURRENT_PROD_VERSION=""
-          PREVIOUS_PROD_VERSION=""
-
-          if [ -f "${STATE_FILE}" ]; then
-            UAT_VERSION=$(jq -r '.uat_version // ""' "${STATE_FILE}")
-            CURRENT_PROD_VERSION=$(jq -r '.prod_current_version // ""' "${STATE_FILE}")
-            PREVIOUS_PROD_VERSION=$(jq -r '.prod_previous_version // ""' "${STATE_FILE}")
-          fi
-
-          echo "uat_version=${UAT_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "current_prod_version=${CURRENT_PROD_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "previous_prod_version=${PREVIOUS_PROD_VERSION}" >> "$GITHUB_OUTPUT"
-
-          echo "Action: ${DEPLOY_ACTION}"
-          echo "Environment: ${DEPLOY_ENV}"
-
-          # -----------------------------
-          # MANUAL PROD ROLLBACK
-          # -----------------------------
-          if [ "${DEPLOY_ACTION}" = "rollback" ]; then
-
-            if [ "${DEPLOY_ENV}" != "prod" ]; then
-              echo "Rollback is supported only for PROD."
-              exit 1
-            fi
-
-            if [ -z "${PREVIOUS_PROD_VERSION}" ]; then
-              echo "No previous PROD version is recorded."
-              exit 1
-            fi
-
-            if ! gh release view "v${PREVIOUS_PROD_VERSION}" \
-              --repo "${REPOSITORY}" \
-              >/dev/null 2>&1; then
-
-              echo "Rollback release v${PREVIOUS_PROD_VERSION} does not exist."
-              exit 1
-            fi
-
-            echo "Rollback target: ${PREVIOUS_PROD_VERSION}"
-
-            echo "effective_version=${PREVIOUS_PROD_VERSION}" >> "$GITHUB_OUTPUT"
-            echo "artifact_source=release" >> "$GITHUB_OUTPUT"
-
-            exit 0
-          fi
-
-          # -----------------------------
-          # NORMAL DEPLOY
-          # -----------------------------
-          if [ -z "${INPUT_VERSION}" ]; then
-            echo "Version is required for deployment."
-            exit 1
-          fi
-
-          echo "effective_version=${INPUT_VERSION}" >> "$GITHUB_OUTPUT"
-
-          # SNAPSHOT
-          if [[ "${INPUT_VERSION}" =~ ${SNAPSHOT_PATTERN} ]]; then
-
-            if [ "${DEPLOY_ENV}" != "dev" ]; then
-              echo "PR SNAPSHOT versions can only be deployed to DEV."
-              exit 1
-            fi
-
-            ARTIFACT_NAME="microsite-${INPUT_VERSION}"
-
-            ARTIFACT_ID=$(gh api \
-              "repos/${REPOSITORY}/actions/artifacts?name=${ARTIFACT_NAME}" \
-              --jq '.artifacts
-                    | map(select(.expired == false))
-                    | sort_by(.created_at)
-                    | reverse
-                    | .[0].id // empty')
-
-            if [ -z "${ARTIFACT_ID}" ]; then
-              echo "Snapshot artifact not found: ${ARTIFACT_NAME}"
-              exit 1
-            fi
-
-            echo "artifact_source=snapshot" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          # RELEASE
-          if [[ "${INPUT_VERSION}" =~ ${RELEASE_PATTERN} ]]; then
-
-            if ! gh release view "v${INPUT_VERSION}" \
-              --repo "${REPOSITORY}" \
-              >/dev/null 2>&1; then
-
-              echo "GitHub Release v${INPUT_VERSION} does not exist."
-              exit 1
-            fi
-
-            # Exact artifact promotion to PROD
-            if [ "${DEPLOY_ENV}" = "prod" ]; then
-
-              if [ -z "${UAT_VERSION}" ]; then
-                echo "No successful UAT version is recorded."
-                exit 1
-              fi
-
-              if [ "${INPUT_VERSION}" != "${UAT_VERSION}" ]; then
-                echo "PROD PROMOTION BLOCKED"
-                echo "Requested PROD version: ${INPUT_VERSION}"
-                echo "Latest UAT version: ${UAT_VERSION}"
-                exit 1
-              fi
-            fi
-
-            echo "artifact_source=release" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          echo "Invalid version format."
-          exit 1
-
-  prod-plan:
-    name: Production Deployment Plan
-    needs: validate
-    if: ${{ inputs.environment == 'prod' }}
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Generate production approval summary
-        env:
-          ACTION: ${{ inputs.action }}
-          TARGET_VERSION: ${{ needs.validate.outputs.effective_version }}
-          UAT_VERSION: ${{ needs.validate.outputs.uat_version }}
-          CURRENT_PROD: ${{ needs.validate.outputs.current_prod_version }}
-          PREVIOUS_PROD: ${{ needs.validate.outputs.previous_prod_version }}
-        run: |
-          echo "# Production Deployment Plan" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-
-          echo "| Item | Value |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Action | **${ACTION}** |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Target Version | \`${TARGET_VERSION}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Current PROD | \`${CURRENT_PROD:-None}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Previous PROD / Rollback | \`${PREVIOUS_PROD:-None}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Latest Successful UAT | \`${UAT_VERSION:-None}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Artifact | \`microsite-${TARGET_VERSION}.zip\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Requested By | \`${GITHUB_ACTOR}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Workflow Run | \`${GITHUB_RUN_NUMBER}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Commit | \`${GITHUB_SHA}\` |" >> "$GITHUB_STEP_SUMMARY"
-
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-
-          if [ "${ACTION}" = "rollback" ]; then
-            echo "## Rollback" >> "$GITHUB_STEP_SUMMARY"
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "Production will be rolled back from \`${CURRENT_PROD}\` to \`${TARGET_VERSION}\`." >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "## Promotion Validation" >> "$GITHUB_STEP_SUMMARY"
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "The exact UAT-tested artifact will be promoted to production." >> "$GITHUB_STEP_SUMMARY"
-          fi
+    uses: ./.github/workflows/reusable-deploy-validate.yml
+    with:
+      action: ${{ inputs.action }}
+      version: ${{ inputs.version }}
+      environment: ${{ inputs.environment }}
 
   approve-uat:
     name: UAT Approval
@@ -257,12 +60,8 @@ jobs:
 
   approve-prod:
     name: Production Approval
-    needs:
-      - validate
-      - prod-plan
-
+    needs: validate
     if: ${{ inputs.environment == 'prod' }}
-
     runs-on: ubuntu-latest
 
     environment:
@@ -280,7 +79,6 @@ jobs:
   deploy-dev:
     name: Deploy dev
     needs: validate
-
     if: ${{ inputs.environment == 'dev' && inputs.action == 'deploy' }}
 
     uses: ./.github/workflows/reusable-deploy.yml
