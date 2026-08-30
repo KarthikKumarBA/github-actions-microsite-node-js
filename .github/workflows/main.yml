@@ -15,70 +15,23 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  version:
-    name: Generate Version
-    runs-on: ubuntu-latest
-
-    outputs:
-      version: ${{ steps.version.outputs.version }}
-      artifact-name: ${{ steps.version.outputs.artifact-name }}
-      release-type: ${{ steps.version.outputs.release-type }}
-
-    steps:
-      - name: Generate version
-        id: version
-        shell: bash
-        run: |
-          BASE_VERSION="1.0.${GITHUB_RUN_NUMBER}"
-
-          if [ "${GITHUB_REF_NAME}" = "main" ]; then
-            VERSION="${BASE_VERSION}"
-            RELEASE_TYPE="release"
-          else
-            SAFE_BRANCH=$(echo "${GITHUB_REF_NAME}" \
-              | tr '/_' '-' \
-              | tr -cd '[:alnum:].-')
-
-            VERSION="${BASE_VERSION}-SNAPSHOT-${SAFE_BRANCH}"
-            RELEASE_TYPE="snapshot"
-          fi
-
-          ARTIFACT_NAME="microsite-${VERSION}"
-
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "artifact-name=${ARTIFACT_NAME}" >> "$GITHUB_OUTPUT"
-          echo "release-type=${RELEASE_TYPE}" >> "$GITHUB_OUTPUT"
-
-          echo "Branch: ${GITHUB_REF_NAME}"
-          echo "Version: ${VERSION}"
-          echo "Artifact: ${ARTIFACT_NAME}"
-          echo "Release type: ${RELEASE_TYPE}"
-
   ci:
     name: CI
-    needs: version
     uses: ./.github/workflows/reusable-ci.yml
     with:
-      version: ${{ needs.version.outputs.version }}
-      artifact-name: ${{ needs.version.outputs.artifact-name }}
+      version: 1.0.${{ github.run_number }}
+      artifact-name: microsite-1.0.${{ github.run_number }}
 
   security:
     name: Security
-    needs:
-      - version
-      - ci
+    needs: ci
     uses: ./.github/workflows/reusable-security.yml
     secrets:
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
   release:
     name: Publish Release
-    needs:
-      - version
-      - security
-
-    if: ${{ needs.version.outputs.release-type == 'release' }}
-
+    needs: security
     runs-on: ubuntu-latest
 
     permissions:
@@ -88,19 +41,19 @@ jobs:
       - name: Download validated artifact
         uses: actions/download-artifact@v8
         with:
-          name: ${{ needs.version.outputs.artifact-name }}
+          name: microsite-1.0.${{ github.run_number }}
 
       - name: Verify artifact
         env:
-          VERSION: ${{ needs.version.outputs.version }}
+          VERSION: 1.0.${{ github.run_number }}
         run: |
           test -f "microsite-${VERSION}.zip"
-          echo "Artifact verified: microsite-${VERSION}.zip"
+          echo "Artifact verified"
 
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ needs.version.outputs.version }}
+          VERSION: 1.0.${{ github.run_number }}
           REPOSITORY: ${{ github.repository }}
           COMMIT_SHA: ${{ github.sha }}
         run: |
@@ -114,23 +67,17 @@ jobs:
   summary:
     name: Final Validation Summary
     needs:
-      - version
       - ci
       - security
       - release
-
     if: always()
-
     runs-on: ubuntu-latest
 
     steps:
       - name: Generate final validation summary
         env:
-          VERSION: ${{ needs.version.outputs.version }}
-          ARTIFACT_NAME: ${{ needs.version.outputs.artifact-name }}
-          RELEASE_TYPE: ${{ needs.version.outputs.release-type }}
+          VERSION: 1.0.${{ github.run_number }}
 
-          VERSION_RESULT: ${{ needs.version.result }}
           CI_RESULT: ${{ needs.ci.result }}
           SECURITY_RESULT: ${{ needs.security.result }}
           RELEASE_RESULT: ${{ needs.release.result }}
@@ -149,26 +96,19 @@ jobs:
         run: |
           VALIDATION="VALID"
 
-          if [ "${VERSION_RESULT}" != "success" ] || \
-             [ "${CI_RESULT}" != "success" ] || \
-             [ "${SECURITY_RESULT}" != "success" ]; then
-            VALIDATION="INVALID"
-          fi
-
-          if [ "${RELEASE_TYPE}" = "release" ] && \
+          if [ "${CI_RESULT}" != "success" ] || \
+             [ "${SECURITY_RESULT}" != "success" ] || \
              [ "${RELEASE_RESULT}" != "success" ]; then
             VALIDATION="INVALID"
           fi
 
-          echo "# Release CI Validation Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "# Release Validation Summary" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
 
           echo "| Item | Value |" >> "$GITHUB_STEP_SUMMARY"
           echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Branch | \`${GITHUB_REF_NAME}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Version | \`${VERSION}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Type | \`${RELEASE_TYPE}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Artifact | \`${ARTIFACT_NAME}.zip\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Artifact | \`microsite-${VERSION}.zip\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Commit | \`${GITHUB_SHA}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Validation | **${VALIDATION}** |" >> "$GITHUB_STEP_SUMMARY"
 
@@ -204,23 +144,13 @@ jobs:
           echo "| High | ${TRIVY_HIGH:-Unavailable} |" >> "$GITHUB_STEP_SUMMARY"
 
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "## Artifact Publication" >> "$GITHUB_STEP_SUMMARY"
+          echo "## Release" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
 
           echo "| Check | Result |" >> "$GITHUB_STEP_SUMMARY"
           echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
-
-          if [ "${RELEASE_TYPE}" = "release" ]; then
-            echo "| Type | Official Release |" >> "$GITHUB_STEP_SUMMARY"
-            echo "| GitHub Release | ${RELEASE_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
-            echo "| Release Version | \`v${VERSION}\` |" >> "$GITHUB_STEP_SUMMARY"
-            echo "| Deployment Policy | DEV / UAT / PROD |" >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "| Type | SNAPSHOT |" >> "$GITHUB_STEP_SUMMARY"
-            echo "| GitHub Release | Not created |" >> "$GITHUB_STEP_SUMMARY"
-            echo "| Actions Artifact | \`${ARTIFACT_NAME}\` |" >> "$GITHUB_STEP_SUMMARY"
-            echo "| Deployment Policy | DEV only |" >> "$GITHUB_STEP_SUMMARY"
-          fi
+          echo "| Release | ${RELEASE_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Version | \`v${VERSION}\` |" >> "$GITHUB_STEP_SUMMARY"
 
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "---" >> "$GITHUB_STEP_SUMMARY"
@@ -228,14 +158,9 @@ jobs:
 
           if [ "${VALIDATION}" = "VALID" ]; then
             echo "## VALID" >> "$GITHUB_STEP_SUMMARY"
-
-            if [ "${RELEASE_TYPE}" = "release" ]; then
-              echo "Official release passed all required validation checks." >> "$GITHUB_STEP_SUMMARY"
-            else
-              echo "Snapshot build passed all required validation checks." >> "$GITHUB_STEP_SUMMARY"
-            fi
+            echo "Release passed all required validation checks." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "## INVALID" >> "$GITHUB_STEP_SUMMARY"
-            echo "Build failed one or more required validation checks." >> "$GITHUB_STEP_SUMMARY"
+            echo "Release failed one or more required validation checks." >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
