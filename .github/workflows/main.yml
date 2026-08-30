@@ -39,7 +39,7 @@ jobs:
 
     steps:
       - name: Download validated artifact
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v8
         with:
           name: microsite-1.0.${{ github.run_number }}
 
