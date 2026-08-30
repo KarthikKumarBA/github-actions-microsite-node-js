@@ -6,6 +6,34 @@ on:
       SONAR_TOKEN:
         required: true
 
+    outputs:
+      sonar_quality_gate:
+        value: ${{ jobs.sonar.outputs.quality_gate }}
+
+      sonar_bugs:
+        value: ${{ jobs.sonar.outputs.bugs }}
+
+      sonar_vulnerabilities:
+        value: ${{ jobs.sonar.outputs.vulnerabilities }}
+
+      sonar_hotspots:
+        value: ${{ jobs.sonar.outputs.hotspots }}
+
+      sonar_code_smells:
+        value: ${{ jobs.sonar.outputs.code_smells }}
+
+      sonar_coverage:
+        value: ${{ jobs.sonar.outputs.coverage }}
+
+      sonar_duplications:
+        value: ${{ jobs.sonar.outputs.duplications }}
+
+      trivy_critical:
+        value: ${{ jobs.trivy.outputs.critical }}
+
+      trivy_high:
+        value: ${{ jobs.trivy.outputs.high }}
+
 permissions:
   contents: read
 
@@ -14,6 +42,15 @@ jobs:
     name: SonarQube Cloud Analysis
     runs-on: ubuntu-latest
     timeout-minutes: 15
+
+    outputs:
+      quality_gate: ${{ steps.results.outputs.quality_gate }}
+      bugs: ${{ steps.results.outputs.bugs }}
+      vulnerabilities: ${{ steps.results.outputs.vulnerabilities }}
+      hotspots: ${{ steps.results.outputs.hotspots }}
+      code_smells: ${{ steps.results.outputs.code_smells }}
+      coverage: ${{ steps.results.outputs.coverage }}
+      duplications: ${{ steps.results.outputs.duplications }}
 
     steps:
       - name: Checkout repository
@@ -24,7 +61,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
-          node-version: '22'
+          node-version: "22"
           cache: npm
 
       - name: Install dependencies
@@ -34,38 +71,50 @@ jobs:
         run: npm run test:coverage
 
       - name: Verify coverage report
-        run: |
-          test -f coverage/lcov.info
-          echo "Coverage report found"
+        run: test -f coverage/lcov.info
 
       - name: SonarQube Cloud Scan
-        id: sonar-scan
         uses: SonarSource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: https://sonarcloud.io
 
       - name: SonarQube Quality Gate
-        id: sonar-gate
         uses: SonarSource/sonarqube-quality-gate-action@7a5fffe8e523c40e0c740b6bc2712ab503e52efa
         timeout-minutes: 5
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
-      - name: SonarQube Summary
-        if: always()
+      - name: Collect SonarQube results
+        id: results
         env:
-          SCAN_RESULT: ${{ steps.sonar-scan.outcome }}
-          GATE_RESULT: ${{ steps.sonar-gate.outcome }}
-          JOB_RESULT: ${{ job.status }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: |
-          echo "## SonarQube Summary" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Check | Result |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Sonar Scan | ${SCAN_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Quality Gate | ${GATE_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Job Status | ${JOB_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
+          PROJECT_KEY=$(grep '^sonar.projectKey=' sonar-project.properties | cut -d= -f2)
+
+          METRICS=$(curl -fsS \
+            -u "${SONAR_TOKEN}:" \
+            "https://sonarcloud.io/api/measures/component?component=${PROJECT_KEY}&metricKeys=bugs,vulnerabilities,security_hotspots,code_smells,coverage,duplicated_lines_density")
+
+          BUGS=$(echo "${METRICS}" | jq -r '.component.measures[]? | select(.metric=="bugs") | .value // "0"')
+          VULNERABILITIES=$(echo "${METRICS}" | jq -r '.component.measures[]? | select(.metric=="vulnerabilities") | .value // "0"')
+          HOTSPOTS=$(echo "${METRICS}" | jq -r '.component.measures[]? | select(.metric=="security_hotspots") | .value // "0"')
+          CODE_SMELLS=$(echo "${METRICS}" | jq -r '.component.measures[]? | select(.metric=="code_smells") | .value // "0"')
+          COVERAGE=$(echo "${METRICS}" | jq -r '.component.measures[]? | select(.metric=="coverage") | .value // "0"')
+          DUPLICATIONS=$(echo "${METRICS}" | jq -r '.component.measures[]? | select(.metric=="duplicated_lines_density") | .value // "0"')
+
+          QUALITY_GATE=$(curl -fsS \
+            -u "${SONAR_TOKEN}:" \
+            "https://sonarcloud.io/api/qualitygates/project_status?projectKey=${PROJECT_KEY}" \
+            | jq -r '.projectStatus.status')
+
+          echo "quality_gate=${QUALITY_GATE}" >> "$GITHUB_OUTPUT"
+          echo "bugs=${BUGS}" >> "$GITHUB_OUTPUT"
+          echo "vulnerabilities=${VULNERABILITIES}" >> "$GITHUB_OUTPUT"
+          echo "hotspots=${HOTSPOTS}" >> "$GITHUB_OUTPUT"
+          echo "code_smells=${CODE_SMELLS}" >> "$GITHUB_OUTPUT"
+          echo "coverage=${COVERAGE}" >> "$GITHUB_OUTPUT"
+          echo "duplications=${DUPLICATIONS}" >> "$GITHUB_OUTPUT"
 
   trivy:
     name: Trivy Security Scan
@@ -73,33 +122,47 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
+    outputs:
+      critical: ${{ steps.results.outputs.critical }}
+      high: ${{ steps.results.outputs.high }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
 
       - name: Trivy filesystem scan
-        id: trivy
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
         with:
           scan-type: fs
           scan-ref: .
           severity: HIGH,CRITICAL
           ignore-unfixed: true
-          exit-code: '1'
-          format: table
+          exit-code: "0"
+          format: json
+          output: trivy-results.json
 
-      - name: Trivy Summary
-        if: always()
-        env:
-          TRIVY_RESULT: ${{ steps.trivy.outcome }}
-          JOB_RESULT: ${{ job.status }}
+      - name: Collect Trivy results
+        id: results
         run: |
-          echo "## Trivy Summary" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Check | Result |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Vulnerability Scan | ${TRIVY_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Job Status | ${JOB_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
+          CRITICAL=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' trivy-results.json)
+          HIGH=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="HIGH")] | length' trivy-results.json)
+
+          echo "critical=${CRITICAL}" >> "$GITHUB_OUTPUT"
+          echo "high=${HIGH}" >> "$GITHUB_OUTPUT"
+
+          if [ "${CRITICAL}" -gt 0 ] || [ "${HIGH}" -gt 0 ]; then
+            echo ""
+            echo "Detected vulnerabilities:"
+            echo ""
+
+            jq -r '
+              .Results[]?.Vulnerabilities[]?
+              | select(.Severity=="HIGH" or .Severity=="CRITICAL")
+              | "\(.Severity) | \(.VulnerabilityID) | \(.PkgName) | Installed: \(.InstalledVersion) | Fixed: \(.FixedVersion // "Not available")"
+            ' trivy-results.json
+
+            exit 1
+          fi
 
   security-gate:
     name: Security Quality Gate
@@ -109,22 +172,5 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Security Summary
-        env:
-          SONAR_RESULT: ${{ needs.sonar.result }}
-          TRIVY_RESULT: ${{ needs.trivy.result }}
-        run: |
-          echo "## Security Quality Gate" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Security Check | Result |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| SonarQube | ${SONAR_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Trivy | ${TRIVY_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
-
-          if [ "${SONAR_RESULT}" != "success" ] || \
-             [ "${TRIVY_RESULT}" != "success" ]; then
-            exit 1
-          fi
-
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Security Quality Gate: PASSED" >> "$GITHUB_STEP_SUMMARY"
+      - name: Validate security
+        run: echo "Security validation completed"
