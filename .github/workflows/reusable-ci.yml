@@ -6,7 +6,6 @@ on:
       version:
         required: true
         type: string
-
       artifact-name:
         required: true
         type: string
