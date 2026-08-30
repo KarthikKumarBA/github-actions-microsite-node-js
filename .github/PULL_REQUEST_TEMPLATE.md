@@ -1,38 +1,29 @@
-## Description
+## Summary
 
-Describe the changes made in this pull request.
+Describe what was changed and why.
 
-## Type of Change
+## Related Issue / Ticket
 
-- [ ] Feature
-- [ ] Bug fix
-- [ ] Refactoring
-- [ ] Documentation
-- [ ] CI/CD
-- [ ] Security
+Add the Jira ticket, GitHub issue, or reference. Write `N/A` if none.
 
-## Validation
+## Developer Validation
 
-- [ ] Application builds successfully
-- [ ] Unit tests pass
-- [ ] Lint checks pass
-- [ ] Formatting checks pass
-- [ ] Security scans pass
-- [ ] No secrets committed
+- [ ] Changes tested locally
+- [ ] Changes self-reviewed
+- [ ] Documentation updated if required
+- [ ] No secrets or sensitive information added
 
 ## Testing Evidence
 
-Add screenshots, logs, or other evidence where applicable.
+Add screenshots, logs, or other testing evidence where applicable.
 
 ## Deployment Impact
 
-- [ ] No deployment impact
-- [ ] Requires deployment
-- [ ] Requires configuration change
+Describe any deployment or configuration impact. Write `None` if there is no impact.
 
 ## Security Impact
 
-Describe any security implications.
+Describe any security impact. Write `None` if there is no impact.
 
 ## Rollback Plan
 
