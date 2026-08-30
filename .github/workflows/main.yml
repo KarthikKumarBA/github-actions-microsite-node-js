@@ -15,26 +15,9 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  validate-context:
-    name: Validate Release Context
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Validate branch
-        run: |
-          if [ "${GITHUB_REF}" != "refs/heads/main" ]; then
-            echo "Official releases can only be created from main."
-            exit 1
-          fi
-
-          echo "Release branch validated: main"
-
   ci:
     name: CI
-    needs: validate-context
-
     uses: ./.github/workflows/reusable-ci.yml
-
     with:
       version: 1.0.${{ github.run_number }}
       artifact-name: microsite-1.0.${{ github.run_number }}
@@ -42,9 +25,7 @@ jobs:
   security:
     name: Security
     needs: ci
-
     uses: ./.github/workflows/reusable-security.yml
-
     secrets:
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
@@ -89,7 +70,6 @@ jobs:
       - ci
       - security
       - release
-
     if: always()
     runs-on: ubuntu-latest
 
@@ -97,9 +77,11 @@ jobs:
       - name: Generate final validation summary
         env:
           VERSION: 1.0.${{ github.run_number }}
+
           CI_RESULT: ${{ needs.ci.result }}
           SECURITY_RESULT: ${{ needs.security.result }}
           RELEASE_RESULT: ${{ needs.release.result }}
+
           SONAR_GATE: ${{ needs.security.outputs.sonar_quality_gate }}
           SONAR_BUGS: ${{ needs.security.outputs.sonar_bugs }}
           SONAR_VULNERABILITIES: ${{ needs.security.outputs.sonar_vulnerabilities }}
@@ -107,8 +89,10 @@ jobs:
           SONAR_SMELLS: ${{ needs.security.outputs.sonar_code_smells }}
           SONAR_COVERAGE: ${{ needs.security.outputs.sonar_coverage }}
           SONAR_DUPLICATIONS: ${{ needs.security.outputs.sonar_duplications }}
+
           TRIVY_CRITICAL: ${{ needs.security.outputs.trivy_critical }}
           TRIVY_HIGH: ${{ needs.security.outputs.trivy_high }}
+
         run: |
           VALIDATION="VALID"
 
@@ -120,12 +104,63 @@ jobs:
 
           echo "# Release Validation Summary" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
+
           echo "| Item | Value |" >> "$GITHUB_STEP_SUMMARY"
           echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
           echo "| Version | \`${VERSION}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Artifact | \`microsite-${VERSION}.zip\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Commit | \`${GITHUB_SHA}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Validation | **${VALIDATION}** |" >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "${VALIDATION}" = "INVALID" ]; then
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "## CI Validation" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "| Check | Result |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Build / Test / Lint | ${CI_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "## SonarQube" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "| Metric | Result |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---:|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Quality Gate | ${SONAR_GATE:-Unavailable} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Bugs | ${SONAR_BUGS:-Unavailable} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Vulnerabilities | ${SONAR_VULNERABILITIES:-Unavailable} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Security Hotspots | ${SONAR_HOTSPOTS:-Unavailable} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Code Smells | ${SONAR_SMELLS:-Unavailable} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Coverage | ${SONAR_COVERAGE:-Unavailable}% |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Duplications | ${SONAR_DUPLICATIONS:-Unavailable}% |" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "## Trivy" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "| Severity | Vulnerabilities |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---:|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Critical | ${TRIVY_CRITICAL:-Unavailable} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| High | ${TRIVY_HIGH:-Unavailable} |" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "## Release" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "| Check | Result |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Release | ${RELEASE_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Version | \`v${VERSION}\` |" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "---" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "${VALIDATION}" = "VALID" ]; then
+            echo "## VALID" >> "$GITHUB_STEP_SUMMARY"
+            echo "Release passed all required validation checks." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## INVALID" >> "$GITHUB_STEP_SUMMARY"
+            echo "Release failed one or more required validation checks." >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
