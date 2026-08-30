@@ -13,10 +13,15 @@ permissions:
   contents: read
   security-events: write
 
+concurrency:
+  group: codeql-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   codeql:
     name: CodeQL Security Scan
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
