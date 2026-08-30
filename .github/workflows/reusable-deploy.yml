@@ -145,7 +145,6 @@ jobs:
         run: |
           rm -rf site-before-deploy
           mkdir -p site-before-deploy
-
           cp -R site/. site-before-deploy/
 
       - name: Read deployment state
@@ -238,7 +237,6 @@ jobs:
           DEPLOY_URL: ${{ steps.urls.outputs.deploy_url }}
         run: |
           for i in {1..12}; do
-
             STATUS=$(curl \
               -L \
               -s \
@@ -263,7 +261,19 @@ jobs:
         continue-on-error: true
         env:
           DEPLOY_URL: ${{ steps.urls.outputs.deploy_url }}
-        run: npx playwright test
+          DEPLOY_ENV: ${{ inputs.environment }}
+          PLAYWRIGHT_HTML_OPEN: never
+        run: |
+          npx playwright test --reporter=html
+
+      - name: Upload Playwright test report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report-${{ inputs.environment }}-${{ inputs.version }}
+          path: playwright-report
+          retention-days: 30
+          if-no-files-found: ignore
 
       - name: Determine validation result
         id: validation
@@ -273,15 +283,10 @@ jobs:
         run: |
           if [ "${HEALTH_RESULT}" = "success" ] && \
              [ "${PLAYWRIGHT_RESULT}" = "success" ]; then
-
             echo "valid=true" >> "$GITHUB_OUTPUT"
           else
             echo "valid=false" >> "$GITHUB_OUTPUT"
           fi
-
-      # -------------------------------
-      # AUTOMATIC PROD ROLLBACK
-      # -------------------------------
 
       - name: Restore previous PROD content
         if: ${{ inputs.environment == 'prod' && steps.validation.outputs.valid == 'false' }}
@@ -316,7 +321,6 @@ jobs:
           DEPLOY_URL: ${{ steps.urls.outputs.deploy_url }}
         run: |
           for i in {1..12}; do
-
             STATUS=$(curl \
               -L \
               -s \
@@ -337,16 +341,11 @@ jobs:
           echo "Automatic rollback validation failed"
           exit 1
 
-      # -------------------------------
-      # UPDATE STATE ONLY AFTER SUCCESS
-      # -------------------------------
-
       - name: Update deployment state
         if: ${{ steps.validation.outputs.valid == 'true' }}
         env:
           VERSION: ${{ inputs.version }}
           DEPLOY_ENV: ${{ inputs.environment }}
-          DEPLOY_ACTION: ${{ inputs.deployment_action }}
           CURRENT_PROD: ${{ steps.state.outputs.current_prod }}
         run: |
           STATE_DIR="site/.deployment-state"
@@ -369,7 +368,6 @@ jobs:
           DEPLOYED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
           if [ "${DEPLOY_ENV}" = "uat" ]; then
-
             jq \
               --arg version "${VERSION}" \
               --arg deployed_at "${DEPLOYED_AT}" \
@@ -383,7 +381,6 @@ jobs:
           fi
 
           if [ "${DEPLOY_ENV}" = "prod" ]; then
-
             jq \
               --arg current "${VERSION}" \
               --arg previous "${CURRENT_PROD}" \
@@ -430,6 +427,27 @@ jobs:
             --force \
             origin pages-state
 
+      - name: Get deployment approval details
+        id: approval
+        if: ${{ inputs.environment == 'prod' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          APPROVED_BY=$(gh api \
+            "repos/${REPOSITORY}/actions/runs/${RUN_ID}/approvals" \
+            --jq '.[-1].user.login // "Unavailable"' \
+            2>/dev/null || echo "Unavailable")
+
+          if [ -z "${APPROVED_BY}" ]; then
+            APPROVED_BY="Unavailable"
+          fi
+
+          echo "approved_by=${APPROVED_BY}" >> "$GITHUB_OUTPUT"
+          echo "Approved by: ${APPROVED_BY}"
+
       - name: Deployment Summary
         if: always()
         env:
@@ -443,32 +461,54 @@ jobs:
           VALIDATION: ${{ steps.validation.outputs.valid }}
           CURRENT_PROD: ${{ steps.state.outputs.current_prod }}
           ROLLBACK: ${{ steps.rollback.outcome }}
+          APPROVED_BY: ${{ steps.approval.outputs.approved_by }}
         run: |
           STATUS="INVALID"
+          HEALTH_STATUS="FAIL"
+          PLAYWRIGHT_STATUS="FAIL"
 
           if [ "${VALIDATION}" = "true" ]; then
             STATUS="VALID"
           fi
 
+          if [ "${HEALTH}" = "success" ]; then
+            HEALTH_STATUS="PASS"
+          fi
+
+          if [ "${PLAYWRIGHT}" = "success" ]; then
+            PLAYWRIGHT_STATUS="PASS"
+          fi
+
+          if [ "${SOURCE}" = "release" ]; then
+            SOURCE_LABEL="GitHub Release"
+          else
+            SOURCE_LABEL="PR Snapshot"
+          fi
+
           echo "# Deployment Validation Summary" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-
           echo "| Item | Value |" >> "$GITHUB_STEP_SUMMARY"
           echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+
           echo "| Action | \`${ACTION}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Version | \`${VERSION}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Environment | \`${DEPLOY_ENV}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Source | \`${SOURCE}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| HTTP Health | ${HEALTH} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Playwright | ${PLAYWRIGHT} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Validation | **${STATUS}** |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Artifact Source | ${SOURCE_LABEL} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Artifact | \`microsite-${VERSION}.zip\` |" >> "$GITHUB_STEP_SUMMARY"
 
           if [ "${DEPLOY_ENV}" = "prod" ]; then
+            echo "| Approved By | \`${APPROVED_BY:-Unavailable}\` |" >> "$GITHUB_STEP_SUMMARY"
             echo "| Previous PROD | \`${CURRENT_PROD:-None}\` |" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
-            if [ "${ROLLBACK}" = "success" ]; then
-              echo "| Automatic Rollback | **SUCCESS** |" >> "$GITHUB_STEP_SUMMARY"
-            fi
+          echo "| HTTP Health | **${HEALTH_STATUS}** |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Playwright E2E | **${PLAYWRIGHT_STATUS}** |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Test Report | \`playwright-report-${DEPLOY_ENV}-${VERSION}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Validation | **${STATUS}** |" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "${DEPLOY_ENV}" = "prod" ] && \
+             [ "${ROLLBACK}" = "success" ]; then
+            echo "| Automatic Rollback | **SUCCESS** |" >> "$GITHUB_STEP_SUMMARY"
           fi
 
           echo "" >> "$GITHUB_STEP_SUMMARY"
