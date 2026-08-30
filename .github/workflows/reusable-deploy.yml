@@ -394,7 +394,7 @@ jobs:
 
           exit 1
 
-      - name: Save successful deployment state
+      - name: Save successful deployment
         if: ${{ steps.validation.outputs.valid == 'true' }}
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -427,6 +427,13 @@ jobs:
 
             cd ..
           fi
+
+          rsync \
+            -a \
+            --delete \
+            --exclude=".git" \
+            site/ \
+            pages-state-work/
 
           STATE_DIR="pages-state-work/.deployment-state"
           STATE_FILE="${STATE_DIR}/deployment-state.json"
@@ -521,7 +528,7 @@ jobs:
             mv "${STATE_FILE}.tmp" "${STATE_FILE}"
           fi
 
-          echo "State before commit:"
+          echo "Deployment state before commit:"
           jq . "${STATE_FILE}"
 
           cd pages-state-work
@@ -529,20 +536,20 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add .deployment-state/deployment-state.json
+          git add -A
 
           if git diff --cached --quiet; then
-            echo "ERROR: deployment state did not change."
-            exit 1
+            echo "No Pages content or deployment state changes detected."
+            exit 0
           fi
 
-          git commit -m "deployment state: ${DEPLOY_ENV} ${VERSION}"
+          git commit -m "deploy ${VERSION} to ${DEPLOY_ENV}"
 
           git push origin HEAD:pages-state
 
-          echo "Deployment state pushed successfully."
+          echo "Pages content and deployment state saved successfully."
 
-      - name: Verify saved deployment state
+      - name: Verify saved deployment
         if: ${{ steps.validation.outputs.valid == 'true' }}
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -561,14 +568,26 @@ jobs:
           STATE_FILE="verify-pages-state/.deployment-state/deployment-state.json"
 
           if [ ! -f "${STATE_FILE}" ]; then
-            echo "Deployment state file was not found after save."
+            echo "Deployment state file was not found."
             exit 1
           fi
 
-          echo "Persisted deployment state:"
-          jq . "${STATE_FILE}"
+          if [ "${DEPLOY_ENV}" = "dev" ]; then
+
+            if [ ! -f "verify-pages-state/dev/index.html" ]; then
+              echo "DEV content was not persisted."
+              exit 1
+            fi
+
+            echo "DEV Pages content persistence verified."
+          fi
 
           if [ "${DEPLOY_ENV}" = "uat" ]; then
+
+            if [ ! -f "verify-pages-state/uat/index.html" ]; then
+              echo "UAT content was not persisted."
+              exit 1
+            fi
 
             SAVED_VERSION=$(jq -r '.uat_version // ""' "${STATE_FILE}")
 
@@ -579,9 +598,16 @@ jobs:
               echo "UAT state verification failed."
               exit 1
             fi
+
+            echo "UAT content and state persistence verified."
           fi
 
           if [ "${DEPLOY_ENV}" = "prod" ]; then
+
+            if [ ! -f "verify-pages-state/index.html" ]; then
+              echo "PROD content was not persisted."
+              exit 1
+            fi
 
             SAVED_VERSION=$(jq -r '.prod_current_version // ""' "${STATE_FILE}")
 
@@ -592,9 +618,9 @@ jobs:
               echo "PROD state verification failed."
               exit 1
             fi
-          fi
 
-          echo "Deployment state verification successful."
+            echo "PROD content and state persistence verified."
+          fi
 
       - name: Get PROD approval details
         id: approval
