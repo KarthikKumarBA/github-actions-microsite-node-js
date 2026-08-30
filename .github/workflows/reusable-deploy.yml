@@ -15,6 +15,11 @@ on:
         required: true
         type: string
 
+      deployment_action:
+        required: false
+        type: string
+        default: deploy
+
 permissions:
   actions: read
   contents: write
@@ -68,7 +73,11 @@ jobs:
 
           ARTIFACT_ID=$(gh api \
             "repos/${REPOSITORY}/actions/artifacts?name=${ARTIFACT_NAME}" \
-            --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | reverse | .[0].id // empty')
+            --jq '.artifacts
+                  | map(select(.expired == false))
+                  | sort_by(.created_at)
+                  | reverse
+                  | .[0].id // empty')
 
           if [ -z "${ARTIFACT_ID}" ]; then
             echo "Snapshot artifact not found: ${ARTIFACT_NAME}"
@@ -89,7 +98,7 @@ jobs:
             "snapshot-download/content/microsite-${VERSION}.zip" \
             "microsite-${VERSION}.zip"
 
-      - name: Verify downloaded artifact
+      - name: Verify artifact
         env:
           VERSION: ${{ inputs.version }}
         run: |
@@ -109,7 +118,7 @@ jobs:
 
           test -f release/index.html
 
-      - name: Restore existing Pages content
+      - name: Restore existing Pages state
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
@@ -131,6 +140,32 @@ jobs:
             cp -R pages-existing/. site/
             rm -rf site/.git
           fi
+
+      - name: Backup current deployment
+        run: |
+          rm -rf site-before-deploy
+          mkdir -p site-before-deploy
+
+          cp -R site/. site-before-deploy/
+
+      - name: Read deployment state
+        id: state
+        run: |
+          STATE_FILE="site/.deployment-state/deployment-state.json"
+
+          UAT_VERSION=""
+          CURRENT_PROD=""
+          PREVIOUS_PROD=""
+
+          if [ -f "${STATE_FILE}" ]; then
+            UAT_VERSION=$(jq -r '.uat_version // ""' "${STATE_FILE}")
+            CURRENT_PROD=$(jq -r '.prod_current_version // ""' "${STATE_FILE}")
+            PREVIOUS_PROD=$(jq -r '.prod_previous_version // ""' "${STATE_FILE}")
+          fi
+
+          echo "uat_version=${UAT_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "current_prod=${CURRENT_PROD}" >> "$GITHUB_OUTPUT"
+          echo "previous_prod=${PREVIOUS_PROD}" >> "$GITHUB_OUTPUT"
 
       - name: Prepare environment content
         env:
@@ -164,7 +199,209 @@ jobs:
             test -f "site/${DEPLOY_ENV}/index.html"
           fi
 
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v6
+
+      - name: Upload GitHub Pages artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          name: github-pages
+          path: site
+
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
+        with:
+          artifact_name: github-pages
+
+      - name: Calculate deployment URL
+        id: urls
+        env:
+          PAGE_URL: ${{ steps.deployment.outputs.page_url }}
+          DEPLOY_ENV: ${{ inputs.environment }}
+        run: |
+          BASE_URL="${PAGE_URL%/}"
+
+          if [ "${DEPLOY_ENV}" = "prod" ]; then
+            DEPLOY_URL="${BASE_URL}/"
+          else
+            DEPLOY_URL="${BASE_URL}/${DEPLOY_ENV}/"
+          fi
+
+          echo "deploy_url=${DEPLOY_URL}" >> "$GITHUB_OUTPUT"
+          echo "Deployment URL: ${DEPLOY_URL}"
+
+      - name: Wait for GitHub Pages
+        id: health
+        continue-on-error: true
+        env:
+          DEPLOY_URL: ${{ steps.urls.outputs.deploy_url }}
+        run: |
+          for i in {1..12}; do
+
+            STATUS=$(curl \
+              -L \
+              -s \
+              -o /dev/null \
+              -w "%{http_code}" \
+              "${DEPLOY_URL}")
+
+            echo "Attempt ${i}: HTTP ${STATUS}"
+
+            if [ "${STATUS}" = "200" ]; then
+              exit 0
+            fi
+
+            sleep 10
+          done
+
+          exit 1
+
+      - name: Run Playwright post-deployment test
+        id: playwright
+        if: ${{ steps.health.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          DEPLOY_URL: ${{ steps.urls.outputs.deploy_url }}
+        run: npx playwright test
+
+      - name: Determine validation result
+        id: validation
+        env:
+          HEALTH_RESULT: ${{ steps.health.outcome }}
+          PLAYWRIGHT_RESULT: ${{ steps.playwright.outcome }}
+        run: |
+          if [ "${HEALTH_RESULT}" = "success" ] && \
+             [ "${PLAYWRIGHT_RESULT}" = "success" ]; then
+
+            echo "valid=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "valid=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # -------------------------------
+      # AUTOMATIC PROD ROLLBACK
+      # -------------------------------
+
+      - name: Restore previous PROD content
+        if: ${{ inputs.environment == 'prod' && steps.validation.outputs.valid == 'false' }}
+        run: |
+          echo "Production validation failed."
+          echo "Restoring previous known-good production content."
+
+          rm -rf site
+          mkdir -p site
+
+          cp -R site-before-deploy/. site/
+
+          test -f site/index.html
+
+      - name: Upload rollback Pages artifact
+        if: ${{ inputs.environment == 'prod' && steps.validation.outputs.valid == 'false' }}
+        uses: actions/upload-pages-artifact@v5
+        with:
+          name: github-pages-rollback
+          path: site
+
+      - name: Deploy automatic rollback
+        id: rollback
+        if: ${{ inputs.environment == 'prod' && steps.validation.outputs.valid == 'false' }}
+        uses: actions/deploy-pages@v5
+        with:
+          artifact_name: github-pages-rollback
+
+      - name: Verify automatic rollback
+        if: ${{ inputs.environment == 'prod' && steps.validation.outputs.valid == 'false' }}
+        env:
+          DEPLOY_URL: ${{ steps.urls.outputs.deploy_url }}
+        run: |
+          for i in {1..12}; do
+
+            STATUS=$(curl \
+              -L \
+              -s \
+              -o /dev/null \
+              -w "%{http_code}" \
+              "${DEPLOY_URL}")
+
+            echo "Rollback check ${i}: HTTP ${STATUS}"
+
+            if [ "${STATUS}" = "200" ]; then
+              echo "Rollback successful"
+              exit 0
+            fi
+
+            sleep 10
+          done
+
+          echo "Automatic rollback validation failed"
+          exit 1
+
+      # -------------------------------
+      # UPDATE STATE ONLY AFTER SUCCESS
+      # -------------------------------
+
+      - name: Update deployment state
+        if: ${{ steps.validation.outputs.valid == 'true' }}
+        env:
+          VERSION: ${{ inputs.version }}
+          DEPLOY_ENV: ${{ inputs.environment }}
+          DEPLOY_ACTION: ${{ inputs.deployment_action }}
+          CURRENT_PROD: ${{ steps.state.outputs.current_prod }}
+        run: |
+          STATE_DIR="site/.deployment-state"
+          STATE_FILE="${STATE_DIR}/deployment-state.json"
+
+          mkdir -p "${STATE_DIR}"
+
+          if [ ! -f "${STATE_FILE}" ]; then
+            cat > "${STATE_FILE}" <<EOF
+          {
+            "uat_version": "",
+            "uat_deployed_at": "",
+            "prod_current_version": "",
+            "prod_previous_version": "",
+            "prod_deployed_at": ""
+          }
+          EOF
+          fi
+
+          DEPLOYED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          if [ "${DEPLOY_ENV}" = "uat" ]; then
+
+            jq \
+              --arg version "${VERSION}" \
+              --arg deployed_at "${DEPLOYED_AT}" \
+              '
+              .uat_version = $version
+              | .uat_deployed_at = $deployed_at
+              ' \
+              "${STATE_FILE}" > "${STATE_FILE}.tmp"
+
+            mv "${STATE_FILE}.tmp" "${STATE_FILE}"
+          fi
+
+          if [ "${DEPLOY_ENV}" = "prod" ]; then
+
+            jq \
+              --arg current "${VERSION}" \
+              --arg previous "${CURRENT_PROD}" \
+              --arg deployed_at "${DEPLOYED_AT}" \
+              '
+              .prod_current_version = $current
+              | .prod_previous_version = $previous
+              | .prod_deployed_at = $deployed_at
+              ' \
+              "${STATE_FILE}" > "${STATE_FILE}.tmp"
+
+            mv "${STATE_FILE}.tmp" "${STATE_FILE}"
+          fi
+
+          cat "${STATE_FILE}"
+
       - name: Save Pages state
+        if: ${{ steps.validation.outputs.valid == 'true' }}
         env:
           GITHUB_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
@@ -193,79 +430,24 @@ jobs:
             --force \
             origin pages-state
 
-      - name: Configure GitHub Pages
-        uses: actions/configure-pages@v5
-
-      - name: Upload GitHub Pages artifact
-        uses: actions/upload-pages-artifact@v4
-        with:
-          path: site
-
-      - name: Deploy GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v5
-
-      - name: Calculate deployment URL
-        id: urls
-        env:
-          PAGE_URL: ${{ steps.deployment.outputs.page_url }}
-          DEPLOY_ENV: ${{ inputs.environment }}
-        run: |
-          BASE_URL="${PAGE_URL%/}"
-
-          if [ "${DEPLOY_ENV}" = "prod" ]; then
-            DEPLOY_URL="${BASE_URL}/"
-          else
-            DEPLOY_URL="${BASE_URL}/${DEPLOY_ENV}/"
-          fi
-
-          echo "deploy_url=${DEPLOY_URL}" >> "$GITHUB_OUTPUT"
-          echo "Deployment URL: ${DEPLOY_URL}"
-
-      - name: Wait for GitHub Pages
-        env:
-          DEPLOY_URL: ${{ steps.urls.outputs.deploy_url }}
-        run: |
-          for i in {1..12}; do
-
-            STATUS=$(curl \
-              -L \
-              -s \
-              -o /dev/null \
-              -w "%{http_code}" \
-              "${DEPLOY_URL}")
-
-            echo "Attempt ${i}: HTTP ${STATUS}"
-
-            if [ "${STATUS}" = "200" ]; then
-              exit 0
-            fi
-
-            sleep 10
-          done
-
-          exit 1
-
-      - name: Run Playwright post-deployment test
-        id: playwright
-        env:
-          DEPLOY_URL: ${{ steps.urls.outputs.deploy_url }}
-        run: npx playwright test
-
       - name: Deployment Summary
         if: always()
         env:
           VERSION: ${{ inputs.version }}
           DEPLOY_ENV: ${{ inputs.environment }}
-          ARTIFACT_SOURCE: ${{ inputs.artifact_source }}
+          ACTION: ${{ inputs.deployment_action }}
+          SOURCE: ${{ inputs.artifact_source }}
           DEPLOY_URL: ${{ steps.urls.outputs.deploy_url }}
-          PLAYWRIGHT_RESULT: ${{ steps.playwright.outcome }}
-          JOB_STATUS: ${{ job.status }}
+          HEALTH: ${{ steps.health.outcome }}
+          PLAYWRIGHT: ${{ steps.playwright.outcome }}
+          VALIDATION: ${{ steps.validation.outputs.valid }}
+          CURRENT_PROD: ${{ steps.state.outputs.current_prod }}
+          ROLLBACK: ${{ steps.rollback.outcome }}
         run: |
-          VALIDATION="VALID"
+          STATUS="INVALID"
 
-          if [ "${JOB_STATUS}" != "success" ]; then
-            VALIDATION="INVALID"
+          if [ "${VALIDATION}" = "true" ]; then
+            STATUS="VALID"
           fi
 
           echo "# Deployment Validation Summary" >> "$GITHUB_STEP_SUMMARY"
@@ -273,16 +455,37 @@ jobs:
 
           echo "| Item | Value |" >> "$GITHUB_STEP_SUMMARY"
           echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Action | \`${ACTION}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Version | \`${VERSION}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Environment | \`${DEPLOY_ENV}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Source | \`${ARTIFACT_SOURCE}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Artifact | \`microsite-${VERSION}.zip\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Playwright | ${PLAYWRIGHT_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Validation | **${VALIDATION}** |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Source | \`${SOURCE}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| HTTP Health | ${HEALTH} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Playwright | ${PLAYWRIGHT} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Validation | **${STATUS}** |" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "${DEPLOY_ENV}" = "prod" ]; then
+            echo "| Previous PROD | \`${CURRENT_PROD:-None}\` |" >> "$GITHUB_STEP_SUMMARY"
+
+            if [ "${ROLLBACK}" = "success" ]; then
+              echo "| Automatic Rollback | **SUCCESS** |" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
 
           if [ -n "${DEPLOY_URL}" ]; then
-            echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "## Live URL" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "${DEPLOY_URL}" >> "$GITHUB_STEP_SUMMARY"
           fi
+
+      - name: Fail deployment after rollback
+        if: ${{ steps.validation.outputs.valid == 'false' }}
+        run: |
+          echo "Deployment validation failed."
+
+          if [ "${{ inputs.environment }}" = "prod" ]; then
+            echo "Previous production content was restored automatically."
+          fi
+
+          exit 1
