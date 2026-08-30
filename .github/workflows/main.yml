@@ -83,35 +83,14 @@ jobs:
             --title "v${VERSION}" \
             --notes "Validated release ${VERSION}"
 
-  deploy-dev:
-    name: Auto Deploy DEV
-    needs: release
-
-    permissions:
-      actions: read
-      contents: write
-      pages: write
-      id-token: write
-
-    uses: ./.github/workflows/reusable-deploy.yml
-
-    with:
-      version: 1.0.${{ github.run_number }}
-      environment: dev
-      artifact_source: release
-      deployment_action: deploy
-
   summary:
     name: Final Validation Summary
-
     needs:
       - ci
       - security
       - release
-      - deploy-dev
 
     if: always()
-
     runs-on: ubuntu-latest
 
     steps:
@@ -121,7 +100,6 @@ jobs:
           CI_RESULT: ${{ needs.ci.result }}
           SECURITY_RESULT: ${{ needs.security.result }}
           RELEASE_RESULT: ${{ needs.release.result }}
-          DEV_RESULT: ${{ needs.deploy-dev.result }}
           SONAR_GATE: ${{ needs.security.outputs.sonar_quality_gate }}
           SONAR_BUGS: ${{ needs.security.outputs.sonar_bugs }}
           SONAR_VULNERABILITIES: ${{ needs.security.outputs.sonar_vulnerabilities }}
@@ -136,70 +114,18 @@ jobs:
 
           if [ "${CI_RESULT}" != "success" ] || \
              [ "${SECURITY_RESULT}" != "success" ] || \
-             [ "${RELEASE_RESULT}" != "success" ] || \
-             [ "${DEV_RESULT}" != "success" ]; then
+             [ "${RELEASE_RESULT}" != "success" ]; then
             VALIDATION="INVALID"
           fi
 
           echo "# Release Validation Summary" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-
           echo "| Item | Value |" >> "$GITHUB_STEP_SUMMARY"
           echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
           echo "| Version | \`${VERSION}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Artifact | \`microsite-${VERSION}.zip\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Commit | \`${GITHUB_SHA}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Validation | **${VALIDATION}** |" >> "$GITHUB_STEP_SUMMARY"
 
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "## CI Validation" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-
-          echo "| Check | Result |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Build / Test / Lint | ${CI_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
-
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "## SonarQube" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-
-          echo "| Metric | Result |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|---|---:|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Quality Gate | ${SONAR_GATE:-Unavailable} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Bugs | ${SONAR_BUGS:-Unavailable} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Vulnerabilities | ${SONAR_VULNERABILITIES:-Unavailable} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Security Hotspots | ${SONAR_HOTSPOTS:-Unavailable} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Code Smells | ${SONAR_SMELLS:-Unavailable} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Coverage | ${SONAR_COVERAGE:-Unavailable}% |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Duplications | ${SONAR_DUPLICATIONS:-Unavailable}% |" >> "$GITHUB_STEP_SUMMARY"
-
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "## Trivy" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-
-          echo "| Severity | Vulnerabilities |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|---|---:|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Critical | ${TRIVY_CRITICAL:-Unavailable} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| High | ${TRIVY_HIGH:-Unavailable} |" >> "$GITHUB_STEP_SUMMARY"
-
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "## Release and Deployment" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-
-          echo "| Check | Result |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| GitHub Release | ${RELEASE_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Automatic DEV Deployment | ${DEV_RESULT} |" >> "$GITHUB_STEP_SUMMARY"
-
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "---" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-
-          if [ "${VALIDATION}" = "VALID" ]; then
-            echo "## VALID" >> "$GITHUB_STEP_SUMMARY"
-            echo "Release passed validation and was automatically deployed to DEV." >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "## INVALID" >> "$GITHUB_STEP_SUMMARY"
-            echo "Release failed one or more required validation checks." >> "$GITHUB_STEP_SUMMARY"
+          if [ "${VALIDATION}" = "INVALID" ]; then
             exit 1
           fi
