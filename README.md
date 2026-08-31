@@ -1,4 +1,4 @@
-# GitHub Actions Micro Site CI/CD
+ # GitHub Actions Micro Site CI/CD
 
 A simple Node.js microsite demonstrating an automated GitHub Actions CI/CD pipeline with DEV, UAT and PROD deployments to GitHub Pages.
 
